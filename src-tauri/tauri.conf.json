@@ -1,0 +1,38 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "identifier": "com.twitter.auto-manager",
+  "productName": "Twitter Auto Manager",
+  "version": "0.1.0",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 1420",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Twitter Auto Manager",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {},
+  "plugins": {
+    "opener": null,
+    "dialog": null,
+    "fs": {
+      "scope": {
+        "allow": ["$APPDATA/**", "$DESKTOP/**", "$DOWNLOAD/**", "$HOME/**"],
+        "deny": []
+      }
+    }
+  }
+}

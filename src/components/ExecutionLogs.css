@@ -1,0 +1,371 @@
+/* components/ExecutionLogs.css */
+
+/* ExecutionLogs specific styles */
+
+/* Filter Controls */
+.filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: end;
+  padding: 16px 0;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.filter-group.search-group {
+  flex: 1;
+  min-width: 200px;
+}
+
+.filter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-color);
+}
+
+.filter-icon {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+.filter-controls .form-select,
+.filter-controls .form-input {
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.filter-controls .btn {
+  align-self: end;
+  padding: 8px 16px;
+  white-space: nowrap;
+}
+
+/* Logs List */
+.logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.log-item {
+  background: var(--white);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  transition: all 0.2s ease;
+  position: relative;
+  border-left: 4px solid var(--border-color);
+}
+
+.log-item:hover {
+  transform: translateX(4px);
+  box-shadow: var(--shadow);
+}
+
+.log-item.success {
+  border-left-color: var(--success-color);
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.02) 0%, var(--white) 20%);
+}
+
+.log-item.error {
+  border-left-color: var(--error-color);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.02) 0%, var(--white) 20%);
+}
+
+.log-item.warning {
+  border-left-color: var(--warning-color);
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.02) 0%, var(--white) 20%);
+}
+
+/* Log Header */
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.log-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.log-time {
+  font-size: 13px;
+  color: var(--text-light);
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+  background: var(--background-color);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.log-account {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary-color);
+  background: rgba(79, 70, 229, 0.1);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.log-type {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 10px;
+}
+
+.log-type.tweet {
+  background: rgba(29, 161, 242, 0.1);
+  color: #1DA1F2;
+}
+
+.log-type.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error-color);
+}
+
+.log-type.info {
+  background: rgba(107, 114, 128, 0.1);
+  color: var(--text-light);
+}
+
+.log-type.warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warning-color);
+}
+
+.log-status {
+  display: flex;
+  align-items: center;
+}
+
+/* Log Icons */
+.log-icon {
+  font-size: 18px;
+}
+
+.log-icon.success {
+  color: var(--success-color);
+}
+
+.log-icon.error {
+  color: var(--error-color);
+  animation: shake 0.5s ease-in-out;
+}
+
+.log-icon.tweet {
+  color: #1DA1F2;
+}
+
+.log-icon.info {
+  color: var(--text-light);
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+/* Log Content */
+.log-content {
+  margin-top: 8px;
+}
+
+.log-message {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-color);
+  margin-bottom: 8px;
+}
+
+.tweet-content {
+  background: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.4;
+  font-style: italic;
+  position: relative;
+}
+
+.tweet-content::before {
+  content: '"';
+  position: absolute;
+  top: -8px;
+  left: 8px;
+  font-size: 24px;
+  color: var(--text-light);
+  background: var(--background-color);
+  padding: 0 4px;
+}
+
+.tweet-content strong {
+  color: var(--text-color);
+  font-style: normal;
+  margin-right: 8px;
+}
+
+/* Log Actions */
+.log-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* Pagination */
+.pagination-container {
+  display: flex;
+  justify-content: center;
+  margin: 24px 0;
+}
+
+.pagination {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.pagination-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  background: var(--white);
+  color: var(--text-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  min-width: 40px;
+  text-align: center;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+}
+
+.pagination-btn.active {
+  background: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+  font-weight: 600;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--background-color);
+}
+
+.pagination-btn:disabled:hover {
+  background: var(--background-color);
+  color: var(--text-light);
+  border-color: var(--border-color);
+}
+
+/* Loading State */
+.logs-list .loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-light);
+}
+
+/* Empty State */
+.logs-list + .empty-state {
+  margin-top: 0;
+}
+
+/* Search highlights */
+.search-highlight {
+  background: yellow;
+  padding: 1px 2px;
+  border-radius: 2px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .filter-controls {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .filter-group,
+  .filter-group.search-group {
+    width: 100%;
+    min-width: auto;
+  }
+
+  .filter-controls .btn {
+    align-self: stretch;
+    width: 100%;
+  }
+
+  .log-header {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .log-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .log-status {
+    align-self: flex-end;
+  }
+
+  .pagination {
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+
+  .pagination-btn {
+    padding: 6px 8px;
+    font-size: 12px;
+    min-width: 32px;
+  }
+}
+
+@media (max-width: 480px) {
+  .log-actions {
+    flex-direction: column;
+  }
+
+  .log-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .tweet-content {
+    margin: 8px 0;
+    padding: 8px;
+  }
+}
