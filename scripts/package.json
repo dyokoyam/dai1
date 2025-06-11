@@ -1,0 +1,20 @@
+{
+  "name": "twitter-auto-manager-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "GitHub Actions scripts for Twitter Auto Manager",
+  "main": "post-tweets.js",
+  "scripts": {
+    "start": "node post-tweets.js"
+  },
+  "dependencies": {
+    "twitter-api-v2": "^1.15.0",
+    "sqlite3": "^5.1.6",
+    "sqlite": "^5.1.1",
+    "date-fns": "^2.30.0",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

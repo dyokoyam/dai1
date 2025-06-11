@@ -17,12 +17,18 @@ jobs:
         with:
           node-version: '18'
       
-      - name: Install dependencies
-        run: npm install twitter-api-v2 sqlite3 date-fns dotenv
+      - name: Install dependencies in scripts directory
+        run: |
+          cd scripts
+          npm install
 
       - name: Run tweet poster
-        run: node scripts/post-tweets.js
+        run: |
+          cd scripts  
+          node post-tweets.js
         env:
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
           TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
-          DB_PATH: ${{ secrets.DB_PATH }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+          NODE_ENV: production
