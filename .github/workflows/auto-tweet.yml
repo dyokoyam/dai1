@@ -1,0 +1,28 @@
+name: Auto Tweet Poster
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # 2時間ごとに実行
+  workflow_dispatch:  # 手動実行用
+
+jobs:
+  post_tweets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm install twitter-api-v2 sqlite3 date-fns dotenv
+
+      - name: Run tweet poster
+        run: node scripts/post-tweets.js
+        env:
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
+          DB_PATH: ${{ secrets.DB_PATH }}
