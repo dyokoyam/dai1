@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Twitter Bot 自動投稿スクリプト
+ * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
  * GitHub Actions で実行され、予定されたツイートを投稿する
  */
 
@@ -20,7 +20,7 @@ const __dirname = dirname(__filename);
 // 環境変数読み込み
 dotenv.config();
 
-// 設定
+// 設定（GitHub Actions対応）
 const config = {
   dbPath: process.env.DB_PATH || join(__dirname, '../data/twitter-auto-manager.sqlite'),
   logLevel: process.env.LOG_LEVEL || 'info',
@@ -45,6 +45,8 @@ const log = {
  */
 async function openDatabase() {
   try {
+    log.info(`Database path: ${config.dbPath}`);
+    
     if (!existsSync(config.dbPath)) {
       throw new Error(`Database file not found: ${config.dbPath}`);
     }
@@ -85,16 +87,16 @@ async function getActiveBotAccounts(db) {
 }
 
 /**
- * 投稿予定のツイートを取得
+ * 投稿予定のツイートを取得（または生成）
  */
 async function getScheduledTweets(db) {
   try {
     const now = new Date().toISOString();
     
-    const tweets = await db.all(`
-      SELECT st.*, ba.twitter_username, ba.consumer_key, ba.consumer_secret,
-             ba.access_token, ba.access_token_secret, ba.daily_tweet_count,
-             ba.max_daily_tweets
+    // まず既存のスケジュール済みツイートをチェック
+    let tweets = await db.all(`
+      SELECT st.*, ba.account_name, ba.api_key, ba.api_key_secret,
+             ba.access_token, ba.access_token_secret
       FROM scheduled_tweets st
       JOIN bot_accounts ba ON st.account_id = ba.id
       JOIN bot_configs bc ON ba.id = bc.account_id
@@ -103,15 +105,93 @@ async function getScheduledTweets(db) {
         AND ba.status = 'active'
         AND bc.is_enabled = 1
         AND bc.auto_tweet_enabled = 1
-        AND ba.daily_tweet_count < ba.max_daily_tweets
       ORDER BY st.scheduled_time ASC
-      LIMIT 50
+      LIMIT 10
     `, [now]);
 
-    log.info(`Found ${tweets.length} tweets scheduled for posting`);
+    // スケジュール済みツイートがない場合、テンプレートから生成
+    if (tweets.length === 0) {
+      log.info('No scheduled tweets found, generating from templates...');
+      tweets = await generateTweetsFromTemplates(db);
+    }
+
+    log.info(`Found ${tweets.length} tweets ready for posting`);
     return tweets;
   } catch (error) {
     log.error(`Failed to get scheduled tweets: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * テンプレートからツイートを生成
+ */
+async function generateTweetsFromTemplates(db) {
+  try {
+    const activeAccounts = await getActiveBotAccounts(db);
+    const generatedTweets = [];
+
+    for (const account of activeAccounts) {
+      // Bot設定を取得
+      const config = await db.get(`
+        SELECT * FROM bot_configs WHERE account_id = ?
+      `, [account.id]);
+
+      if (!config || !config.tweet_templates) {
+        log.warn(`No tweet templates found for account: ${account.account_name}`);
+        continue;
+      }
+
+      // テンプレートを解析
+      const templates = config.tweet_templates.split('\n').filter(t => t.trim());
+      if (templates.length === 0) {
+        log.warn(`No valid templates for account: ${account.account_name}`);
+        continue;
+      }
+
+      // ランダムにテンプレートを選択
+      const template = templates[Math.floor(Math.random() * templates.length)];
+      
+      // ハッシュタグを追加
+      let content = template.trim();
+      if (config.hashtags) {
+        const hashtags = config.hashtags.split(',').map(h => h.trim()).join(' ');
+        content += ` ${hashtags}`;
+      }
+
+      // 時刻情報を追加
+      const now = new Date();
+      const timeString = now.toLocaleString('ja-JP', { 
+        timeZone: 'Asia/Tokyo',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      
+      // 一部のテンプレートに時刻を追加（ランダム）
+      if (Math.random() < 0.3) {
+        content += ` (${timeString})`;
+      }
+
+      generatedTweets.push({
+        id: `temp_${account.id}_${Date.now()}`,
+        account_id: account.id,
+        content: content,
+        status: 'pending',
+        account_name: account.account_name,
+        api_key: account.api_key,
+        api_key_secret: account.api_key_secret,
+        access_token: account.access_token,
+        access_token_secret: account.access_token_secret,
+        scheduled_time: now.toISOString(),
+        created_at: now.toISOString()
+      });
+
+      log.info(`Generated tweet for ${account.account_name}: "${content}"`);
+    }
+
+    return generatedTweets;
+  } catch (error) {
+    log.error(`Failed to generate tweets from templates: ${error.message}`);
     throw error;
   }
 }
@@ -122,13 +202,13 @@ async function getScheduledTweets(db) {
 function createTwitterClient(account) {
   try {
     return new TwitterApi({
-      appKey: account.consumer_key,
-      appSecret: account.consumer_secret,
+      appKey: account.api_key,
+      appSecret: account.api_key_secret,
       accessToken: account.access_token,
       accessSecret: account.access_token_secret,
     });
   } catch (error) {
-    log.error(`Failed to create Twitter client for @${account.twitter_username}: ${error.message}`);
+    log.error(`Failed to create Twitter client for @${account.account_name}: ${error.message}`);
     throw error;
   }
 }
@@ -161,23 +241,6 @@ async function postTweet(client, content, accountName) {
 }
 
 /**
- * ツイート状態を更新
- */
-async function updateTweetStatus(db, tweetId, status, twitterTweetId = null, errorMessage = null) {
-  try {
-    await db.run(`
-      UPDATE scheduled_tweets 
-      SET status = ?, updated_at = ?
-      WHERE id = ?
-    `, [status, new Date().toISOString(), tweetId]);
-
-    log.debug(`Updated tweet ${tweetId} status to ${status}`);
-  } catch (error) {
-    log.error(`Failed to update tweet status: ${error.message}`);
-  }
-}
-
-/**
  * 実行ログを追加
  */
 async function addExecutionLog(db, accountId, logType, message, tweetId = null, tweetContent = null, status = 'success') {
@@ -194,72 +257,25 @@ async function addExecutionLog(db, accountId, logType, message, tweetId = null, 
 }
 
 /**
- * 日次投稿カウントを更新
- */
-async function updateDailyTweetCount(db, accountId) {
-  try {
-    await db.run(`
-      UPDATE bot_accounts 
-      SET daily_tweet_count = daily_tweet_count + 1,
-          updated_at = ?
-      WHERE id = ?
-    `, [new Date().toISOString(), accountId]);
-
-    log.debug(`Updated daily tweet count for account ${accountId}`);
-  } catch (error) {
-    log.error(`Failed to update daily tweet count: ${error.message}`);
-  }
-}
-
-/**
- * 日次カウントをリセット（午前0時に実行）
- */
-async function resetDailyCountsIfNeeded(db) {
-  try {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    
-    // 最後のリセットから24時間経過している場合のみリセット
-    const lastReset = await db.get(`
-      SELECT value FROM app_settings 
-      WHERE key = 'last_daily_reset'
-    `);
-
-    if (!lastReset || new Date(lastReset.value) < todayStart) {
-      await db.run(`UPDATE bot_accounts SET daily_tweet_count = 0`);
-      
-      await db.run(`
-        INSERT OR REPLACE INTO app_settings (key, value, updated_at)
-        VALUES ('last_daily_reset', ?, ?)
-      `, [todayStart.toISOString(), new Date().toISOString()]);
-
-      log.info('Daily tweet counts reset');
-    }
-  } catch (error) {
-    log.error(`Failed to reset daily counts: ${error.message}`);
-  }
-}
-
-/**
  * メイン処理
  */
 async function main() {
   let db = null;
   
   try {
-            log.info('Starting Twitter Auto Manager posting process...');
+    log.info('🚀 Starting Twitter Auto Manager posting process...');
+    log.info(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+    log.info(`📁 Database path: ${config.dbPath}`);
+    log.info(`🔄 Dry run: ${config.dryRun}`);
     
     // データベース接続
     db = await openDatabase();
-    
-    // 日次カウントリセット確認
-    await resetDailyCountsIfNeeded(db);
     
     // 投稿予定のツイートを取得
     const scheduledTweets = await getScheduledTweets(db);
     
     if (scheduledTweets.length === 0) {
-      log.info('No tweets scheduled for posting at this time');
+      log.info('✅ No tweets scheduled for posting at this time');
       return;
     }
 
@@ -269,72 +285,77 @@ async function main() {
 
     for (const tweet of scheduledTweets) {
       try {
-        log.info(`Processing tweet ${tweet.id} for @${tweet.twitter_username}`);
+        log.info(`📝 Processing tweet for @${tweet.account_name}: "${tweet.content}"`);
         
         // Twitter クライアント作成
         const client = createTwitterClient(tweet);
         
         // ツイート投稿
-        const result = await postTweet(client, tweet.content, tweet.twitter_username);
+        const result = await postTweet(client, tweet.content, tweet.account_name);
         
         if (result.success) {
           // 成功時の処理
-          await updateTweetStatus(db, tweet.id, 'posted', result.data?.id);
-          await updateDailyTweetCount(db, tweet.account_id);
+          successCount++;
+          
           await addExecutionLog(
             db,
             tweet.account_id,
             'tweet',
-            `自動ツイートを投稿しました`,
+            `自動ツイートを投稿しました (GitHub Actions)`,
             result.data?.id,
             tweet.content,
             'success'
           );
-          successCount++;
+          
+          log.info(`✅ Tweet posted successfully for @${tweet.account_name}`);
           
           // 投稿間隔を考慮した待機（レート制限対策）
           if (scheduledTweets.length > 1) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            log.info('⏳ Waiting 30 seconds before next tweet...');
+            await new Promise(resolve => setTimeout(resolve, 30000));
           }
         } else {
           // エラー時の処理
-          await updateTweetStatus(db, tweet.id, 'failed');
+          errorCount++;
+          
           await addExecutionLog(
             db,
             tweet.account_id,
             'error',
-            `ツイート投稿に失敗: ${result.error}`,
+            `ツイート投稿に失敗 (GitHub Actions): ${result.error}`,
             null,
             tweet.content,
             'error'
           );
-          errorCount++;
+          
+          log.error(`❌ Tweet failed for @${tweet.account_name}: ${result.error}`);
         }
       } catch (error) {
-        log.error(`Error processing tweet ${tweet.id}: ${error.message}`);
-        await updateTweetStatus(db, tweet.id, 'failed');
+        log.error(`💥 Error processing tweet for ${tweet.account_name}: ${error.message}`);
+        errorCount++;
+        
         await addExecutionLog(
           db,
           tweet.account_id,
           'error',
-          `ツイート処理中にエラーが発生: ${error.message}`,
+          `ツイート処理中にエラーが発生 (GitHub Actions): ${error.message}`,
           null,
           tweet.content,
           'error'
         );
-        errorCount++;
       }
     }
 
-    log.info(`Posting process completed. Success: ${successCount}, Errors: ${errorCount}`);
+    log.info(`🎉 Posting process completed!`);
+    log.info(`📊 Results: ${successCount} successful, ${errorCount} errors`);
     
   } catch (error) {
-    log.error(`Main process error: ${error.message}`);
+    log.error(`💥 Main process error: ${error.message}`);
     process.exit(1);
   } finally {
     if (db) {
       await db.close();
-      log.info('Database connection closed');
+      log.info('📁 Database connection closed');
     }
   }
 }
@@ -343,21 +364,19 @@ async function main() {
  * エラーハンドリング
  */
 process.on('uncaughtException', (error) => {
-  log.error(`Uncaught exception: ${error.message}`);
+  log.error(`💥 Uncaught exception: ${error.message}`);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  log.error(`Unhandled rejection at: ${promise}, reason: ${reason}`);
+  log.error(`💥 Unhandled rejection at: ${promise}, reason: ${reason}`);
   process.exit(1);
 });
 
 // スクリプト実行
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {
-    log.error(`Script execution failed: ${error.message}`);
+    log.error(`💥 Script execution failed: ${error.message}`);
     process.exit(1);
   });
 }
-
-export { main };

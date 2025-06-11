@@ -174,6 +174,36 @@ fn init_database() -> Result<Connection> {
         [],
     )?;
     
+    // スケジュール投稿テーブル
+    println!("📅 Creating scheduled_tweets table...");
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS scheduled_tweets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            scheduled_time TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+    
+    // ユーザー設定テーブル
+    println!("👤 Creating user_settings table...");
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL UNIQUE DEFAULT 'default',
+            plan_type TEXT DEFAULT 'starter',
+            max_accounts INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    
     // ユーザー設定テーブル
     println!("👤 Creating user_settings table...");
     conn.execute(
