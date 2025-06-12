@@ -110,135 +110,115 @@ fn init_database() -> Result<Connection> {
     
     let db_path = data_dir.join("twilia.sqlite");
     
-    // 開発中なので既存のDBファイルを強制削除
-    if db_path.exists() {
-        println!("🗑️  Removing existing database for development: {:?}", db_path);
-        fs::remove_file(&db_path).context("Failed to remove existing database")?;
-    } else {
-        println!("📁 Database path: {:?}", db_path);
-    }
-    
-    println!("🚀 Creating new database...");
+    // データベース接続
     let conn = Connection::open(&db_path)?;
     
-    // Bot アカウントテーブル（簡素化版）
-    println!("📋 Creating bot_accounts table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS bot_accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_name TEXT NOT NULL UNIQUE,
-            api_key TEXT NOT NULL,
-            api_key_secret TEXT NOT NULL,
-            access_token TEXT NOT NULL,
-            access_token_secret TEXT NOT NULL,
-            api_type TEXT NOT NULL DEFAULT 'Free',
-            status TEXT DEFAULT 'inactive',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )",
+    // データベースが新規作成かどうかを確認
+    let table_exists: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bot_accounts'",
         [],
-    )?;
+        |row| row.get(0)
+    ).unwrap_or(0);
     
-    // Bot 設定テーブル
-    println!("⚙️  Creating bot_configs table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS bot_configs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            is_enabled BOOLEAN DEFAULT 0,
-            auto_tweet_enabled BOOLEAN DEFAULT 0,
-            tweet_interval_minutes INTEGER DEFAULT 60,
-            tweet_templates TEXT,
-            hashtags TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
+    // テーブルが存在しない場合のみ作成
+    if table_exists == 0 {
+        // Bot アカウントテーブル（簡素化版）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bot_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_name TEXT NOT NULL UNIQUE,
+                api_key TEXT NOT NULL,
+                api_key_secret TEXT NOT NULL,
+                access_token TEXT NOT NULL,
+                access_token_secret TEXT NOT NULL,
+                api_type TEXT NOT NULL DEFAULT 'Free',
+                status TEXT DEFAULT 'inactive',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        
+        // Bot 設定テーブル
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bot_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                is_enabled BOOLEAN DEFAULT 0,
+                auto_tweet_enabled BOOLEAN DEFAULT 0,
+                tweet_interval_minutes INTEGER DEFAULT 60,
+                tweet_templates TEXT,
+                hashtags TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        
+        // 実行ログテーブル
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS execution_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                log_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                tweet_id TEXT,
+                tweet_content TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        
+        // スケジュール投稿テーブル
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scheduled_tweets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                scheduled_time TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        
+        // ユーザー設定テーブル
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL UNIQUE DEFAULT 'default',
+                plan_type TEXT DEFAULT 'starter',
+                max_accounts INTEGER DEFAULT 999,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        
+        // アプリ設定テーブル（日次リセット追跡用）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        
+        // デフォルトユーザー設定を挿入
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR IGNORE INTO user_settings (user_id, created_at, updated_at) 
+             VALUES ('default', ?, ?)",
+            params![now, now],
+        )?;
+    }
     
-    // 実行ログテーブル
-    println!("📝 Creating execution_logs table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS execution_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            log_type TEXT NOT NULL,
-            message TEXT NOT NULL,
-            tweet_id TEXT,
-            tweet_content TEXT,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
-    
-    // スケジュール投稿テーブル
-    println!("📅 Creating scheduled_tweets table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS scheduled_tweets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            scheduled_time TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
-    
-    // ユーザー設定テーブル
-    println!("👤 Creating user_settings table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL UNIQUE DEFAULT 'default',
-            plan_type TEXT DEFAULT 'starter',
-            max_accounts INTEGER DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )",
-        [],
-    )?;
-    
-    // ユーザー設定テーブル
-    println!("👤 Creating user_settings table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL UNIQUE DEFAULT 'default',
-            plan_type TEXT DEFAULT 'starter',
-            max_accounts INTEGER DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )",
-        [],
-    )?;
-    
-    // アプリ設定テーブル（日次リセット追跡用）
-    println!("🔧 Creating app_settings table...");
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )",
-        [],
-    )?;
-    
-    // デフォルトユーザー設定を挿入
-    let now = Utc::now().to_rfc3339();
-    println!("👤 Inserting default user settings...");
-    conn.execute(
-        "INSERT OR IGNORE INTO user_settings (user_id, created_at, updated_at) 
-         VALUES ('default', ?, ?)",
-        params![now, now],
-    )?;
-    
-    println!("✅ Database initialized successfully");
     Ok(conn)
 }
 
@@ -317,9 +297,6 @@ fn get_bot_accounts(state: State<AppState>) -> Result<Vec<BotAccount>, String> {
 
 #[tauri::command]
 fn add_bot_account(account: BotAccount, state: State<AppState>) -> Result<i64, String> {
-    println!("=== ADD BOT ACCOUNT DEBUG ===");
-    println!("Received account: {:?}", account);
-    
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     let now = Utc::now().to_rfc3339();
     
@@ -340,8 +317,6 @@ fn add_bot_account(account: BotAccount, state: State<AppState>) -> Result<i64, S
         return Err("Access Token Secretが空です".to_string());
     }
     
-    println!("Starting database insert...");
-    
     let result = conn.execute(
         "INSERT INTO bot_accounts (account_name, api_key, api_key_secret, 
          access_token, access_token_secret, api_type, created_at, updated_at)
@@ -358,15 +333,9 @@ fn add_bot_account(account: BotAccount, state: State<AppState>) -> Result<i64, S
         ],
     );
     
-    match result {
-        Ok(_) => println!("Bot account inserted successfully"),
-        Err(ref e) => println!("Database insert error: {}", e),
-    }
-    
     result.map_err(|e| format!("データベースエラー: {}", e))?;
     
     let account_id = conn.last_insert_rowid();
-    println!("New account ID: {}", account_id);
     
     // デフォルトの Bot 設定を作成
     let config_result = conn.execute(
@@ -375,22 +344,13 @@ fn add_bot_account(account: BotAccount, state: State<AppState>) -> Result<i64, S
         params![account_id, now, now],
     );
     
-    match config_result {
-        Ok(_) => println!("Bot config created successfully"),
-        Err(ref e) => println!("Config creation error: {}", e),
-    }
-    
     config_result.map_err(|e| format!("設定作成エラー: {}", e))?;
     
-    println!("=== ADD BOT ACCOUNT SUCCESS ===");
     Ok(account_id)
 }
 
 #[tauri::command]
 fn update_bot_account(account: BotAccount, state: State<AppState>) -> Result<(), String> {
-    println!("=== UPDATE BOT ACCOUNT DEBUG ===");
-    println!("Received account: {:?}", account);
-    
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     let now = Utc::now().to_rfc3339();
     
@@ -414,7 +374,6 @@ fn update_bot_account(account: BotAccount, state: State<AppState>) -> Result<(),
     )
     .map_err(|e| format!("データベース更新エラー: {}", e))?;
     
-    println!("=== UPDATE BOT ACCOUNT SUCCESS ===");
     Ok(())
 }
 
@@ -680,9 +639,6 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
 // テスト投稿機能
 #[tauri::command]
 async fn test_tweet(request: TestTweetRequest, state: State<'_, AppState>) -> Result<TwitterApiResponse, String> {
-    println!("=== TEST TWEET DEBUG ===");
-    println!("Request: {:?}", request);
-    
     // アカウント情報を取得
     let account = {
         let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
@@ -706,13 +662,9 @@ async fn test_tweet(request: TestTweetRequest, state: State<'_, AppState>) -> Re
         ).map_err(|e| format!("アカウント取得エラー: {}", e))?
     };
     
-    println!("Account found: {}", account.account_name);
-    
     // Twitter API v2 へ投稿
     match post_to_twitter(&account, &request.content).await {
         Ok(tweet_id) => {
-            println!("Tweet posted successfully: {}", tweet_id);
-            
             // 実行ログを追加
             let log = ExecutionLog {
                 id: None,
@@ -747,8 +699,6 @@ async fn test_tweet(request: TestTweetRequest, state: State<'_, AppState>) -> Re
             })
         }
         Err(e) => {
-            println!("Tweet failed: {}", e);
-            
             // エラーログを追加
             let log = ExecutionLog {
                 id: None,
@@ -787,8 +737,6 @@ async fn test_tweet(request: TestTweetRequest, state: State<'_, AppState>) -> Re
 
 // Twitter API v2 への投稿（正しいOAuth 1.0a版）
 async fn post_to_twitter(account: &BotAccount, content: &str) -> Result<String, String> {
-    println!("Posting to Twitter API v2 with OAuth 1.0a...");
-    
     let url = "https://api.twitter.com/2/tweets";
     let method = "POST";
     
@@ -807,8 +755,6 @@ async fn post_to_twitter(account: &BotAccount, content: &str) -> Result<String, 
         Some(&payload),
     )?;
     
-    println!("OAuth Authorization header generated");
-    
     let client = reqwest::Client::new();
     
     let response = client
@@ -823,9 +769,6 @@ async fn post_to_twitter(account: &BotAccount, content: &str) -> Result<String, 
     let status = response.status();
     let response_text = response.text().await
         .map_err(|e| format!("レスポンス読取エラー: {}", e))?;
-    
-    println!("Twitter API response status: {}", status);
-    println!("Twitter API response: {}", response_text);
     
     if status.is_success() {
         // JSON パースしてツイートIDを取得

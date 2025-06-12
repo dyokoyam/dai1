@@ -122,12 +122,6 @@ function BotManagement({ onUpdate, userSettings }) {
     e.preventDefault();
     console.log('Submitting bot form:', { isEditing, currentBot });
     
-    // プラン制限チェック
-    if (!isEditing && botAccounts.length >= (userSettings?.max_accounts || 1)) {
-      alert(`現在のプランでは最大${userSettings?.max_accounts || 1}個のBotまでしか作成できません。`);
-      return;
-    }
-    
     // バリデーション
     if (!currentBot.account_name.trim()) {
       alert('アカウント名を入力してください。');
@@ -337,7 +331,6 @@ function BotManagement({ onUpdate, userSettings }) {
           <button 
             className="btn btn-primary"
             onClick={openAddModal}
-            disabled={botAccounts.length >= (userSettings?.max_accounts || 1)}
           >
             <FaPlus /> 新規追加
           </button>
