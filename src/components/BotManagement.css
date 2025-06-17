@@ -227,6 +227,78 @@
   min-height: 80px;
 }
 
+/* Large Modal */
+.modal-large {
+  max-width: 800px !important;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* Time Checkbox Grid */
+.time-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+  background: var(--background-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.time-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  background: var(--white);
+  border: 1px solid var(--border-color);
+}
+
+.time-checkbox:hover {
+  background: rgba(79, 70, 229, 0.05);
+  border-color: var(--primary-color);
+}
+
+.time-checkbox input[type="checkbox"] {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-color);
+}
+
+.time-checkbox input[type="checkbox"]:checked + .time-label {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.time-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-color);
+  user-select: none;
+  min-width: 40px;
+}
+
+/* Selected Times */
+.selected-times {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(79, 70, 229, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(79, 70, 229, 0.2);
+}
+
+.selected-times p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
 /* Toggle Switch */
 .toggle-switch {
   position: relative;
@@ -334,6 +406,31 @@ input:checked + .toggle-slider:before {
     flex: 0 1 auto;
     min-width: 60px;
   }
+
+  /* Large Modal Responsive */
+  .modal-large {
+    max-width: 95% !important;
+    margin: 10px;
+  }
+
+  /* Time Checkbox Grid Responsive */
+  .time-checkbox-grid {
+    grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .time-checkbox {
+    padding: 6px 8px;
+    flex-direction: column;
+    gap: 4px;
+    text-align: center;
+  }
+
+  .time-label {
+    font-size: 12px;
+    min-width: auto;
+  }
 }
 
 @media (max-width: 480px) {
@@ -344,5 +441,25 @@ input:checked + .toggle-slider:before {
   .bot-actions .btn {
     flex: 1;
     width: 100%;
+  }
+
+  /* Time Checkbox Grid for Very Small Screens */
+  .time-checkbox-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .time-checkbox {
+    padding: 4px 6px;
+  }
+
+  .time-checkbox input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+  }
+
+  .time-label {
+    font-size: 11px;
   }
 }

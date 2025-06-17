@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { FaPlus, FaEdit, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaRobot, FaPaperPlane } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaRobot, FaPaperPlane, FaClock, FaFileAlt } from 'react-icons/fa';
 import './BotManagement.css';
 
 function BotManagement({ onUpdate, userSettings }) {
@@ -10,6 +10,7 @@ function BotManagement({ onUpdate, userSettings }) {
   const [botAccounts, setBotAccounts] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [isTweetModalOpen, setIsTweetModalOpen] = useState(false);
   const [currentBot, setCurrentBot] = useState({
     account_name: '',
     api_type: 'Free',
@@ -31,6 +32,17 @@ function BotManagement({ onUpdate, userSettings }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [testingBotId, setTestingBotId] = useState(null);
+  const [selectedBotForTweet, setSelectedBotForTweet] = useState(null);
+  const [tweetContent, setTweetContent] = useState('');
+  const [selectedBotForConfig, setSelectedBotForConfig] = useState(null);
+  const [scheduledTimes, setScheduledTimes] = useState([]);
+  const [postContent, setPostContent] = useState('');
+
+  // 時間選択肢を生成（0:00〜23:00）
+  const timeOptions = Array.from({ length: 24 }, (_, i) => {
+    const hour = i.toString().padStart(2, '0');
+    return `${hour}:00`;
+  });
 
   useEffect(() => {
     console.log('useEffect triggered - fetching bot accounts');
@@ -79,16 +91,23 @@ function BotManagement({ onUpdate, userSettings }) {
     setIsModalOpen(true);
   };
 
-  const openConfigModal = async (botId) => {
-    console.log('Opening config modal for bot ID:', botId);
+  const openConfigModal = async (bot) => {
+    console.log('Opening config modal for bot:', bot);
+    setSelectedBotForConfig(bot);
+    
     try {
-      const config = await invoke('get_bot_config', { accountId: botId });
+      const config = await invoke('get_bot_config', { accountId: bot.id });
       console.log('Bot config loaded:', config);
       setCurrentConfig({
         ...config,
         tweet_templates: config.tweet_templates || '',
         hashtags: config.hashtags || ''
       });
+      
+      // 初期値設定
+      setScheduledTimes([]);
+      setPostContent('');
+      
       setIsConfigModalOpen(true);
     } catch (error) {
       console.error('Failed to fetch bot config:', error);
@@ -100,6 +119,12 @@ function BotManagement({ onUpdate, userSettings }) {
     console.log('Closing modals');
     setIsModalOpen(false);
     setIsConfigModalOpen(false);
+    setIsTweetModalOpen(false);
+    setTweetContent('');
+    setSelectedBotForTweet(null);
+    setSelectedBotForConfig(null);
+    setScheduledTimes([]);
+    setPostContent('');
   };
 
   const handleInputChange = (e) => {
@@ -116,6 +141,14 @@ function BotManagement({ onUpdate, userSettings }) {
       ...currentConfig,
       [name]: type === 'checkbox' ? checked : value
     });
+  };
+
+  const handleTimeChange = (time, checked) => {
+    if (checked) {
+      setScheduledTimes([...scheduledTimes, time]);
+    } else {
+      setScheduledTimes(scheduledTimes.filter(t => t !== time));
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -169,11 +202,34 @@ function BotManagement({ onUpdate, userSettings }) {
 
   const handleConfigSubmit = async (e) => {
     e.preventDefault();
-    console.log('Submitting bot config:', currentConfig);
+    console.log('Submitting bot config:', {
+      scheduledTimes,
+      postContent
+    });
+    
+    // バリデーション
+    if (scheduledTimes.length === 0) {
+      alert('投稿予定時間を少なくとも1つ選択してください。');
+      return;
+    }
+    
+    if (!postContent.trim()) {
+      alert('投稿内容を入力してください。');
+      return;
+    }
     
     try {
-      await invoke('update_bot_config', { config: currentConfig });
+      // 設定を保存（実際のAPIに合わせて調整が必要）
+      const configData = {
+        ...currentConfig,
+        account_id: selectedBotForConfig.id,
+        scheduled_times: scheduledTimes.join(','),
+        post_content: postContent
+      };
+      
+      await invoke('update_bot_config', { config: configData });
       console.log('Bot config saved successfully');
+      alert('Bot設定を保存しました！');
       fetchBotAccounts();
       if (onUpdate) onUpdate();
       closeModal();
@@ -217,42 +273,48 @@ function BotManagement({ onUpdate, userSettings }) {
   };
 
   const handleTestTweet = async (botId, botName) => {
-    console.log(`Test tweet requested for bot ID: ${botId}`);
+    console.log(`Opening tweet modal for bot ID: ${botId}`);
+    setSelectedBotForTweet({ id: botId, name: botName });
+    setTweetContent('');
+    setIsTweetModalOpen(true);
+  };
+
+  const handleTweetSubmit = async (e) => {
+    e.preventDefault();
     
-    const testContent = prompt('テスト投稿の内容を入力してください:', 
-      'こんにちは！これはTwitter Auto Managerからのテスト投稿です 🤖 #テスト投稿');
-    
-    if (!testContent) {
-      return; // キャンセルされた場合
+    if (!tweetContent.trim()) {
+      alert('投稿内容を入力してください。');
+      return;
     }
     
-    if (testContent.length > 280) {
+    if (tweetContent.length > 280) {
       alert('投稿内容が280文字を超えています。');
       return;
     }
     
-    setTestingBotId(botId);
+    setTestingBotId(selectedBotForTweet.id);
     
     try {
-      console.log('Sending test tweet...');
+      console.log('Sending tweet...');
       const result = await invoke('test_tweet', {
         request: {
-          account_id: botId,
-          content: testContent
+          account_id: selectedBotForTweet.id,
+          content: tweetContent
         }
       });
       
-      console.log('Test tweet result:', result);
+      console.log('Tweet result:', result);
       
       if (result.success) {
-        alert(`✅ テスト投稿が成功しました！\n\nツイートID: ${result.tweet_id}\n\n「Bot実行ログ」ページで詳細を確認できます。`);
+        alert(`✅ 投稿が成功しました！\n\nツイートID: ${result.tweet_id}\n\n「Bot実行ログ」ページで詳細を確認できます。`);
         if (onUpdate) onUpdate(); // 統計情報を更新
+        closeModal();
       } else {
-        alert(`❌ テスト投稿に失敗しました。\n\nエラー: ${result.message}\n\n「Bot実行ログ」ページでエラー詳細を確認してください。`);
+        alert(`❌ 投稿に失敗しました。\n\nエラー: ${result.message}\n\n「Bot実行ログ」ページでエラー詳細を確認してください。`);
       }
     } catch (error) {
-      console.error('Failed to send test tweet:', error);
-      alert(`❌ テスト投稿中にエラーが発生しました。\n\nエラー詳細: ${error}\n\nAPI Keyの設定を確認してください。`);
+      console.error('Failed to send tweet:', error);
+      alert(`❌ 投稿中にエラーが発生しました。\n\nエラー詳細: ${error}\n\nAPI Keyの設定を確認してください。`);
     } finally {
       setTestingBotId(null);
     }
@@ -274,7 +336,8 @@ function BotManagement({ onUpdate, userSettings }) {
     botAccountsLength: botAccounts.length,
     userSettingsMaxAccounts: userSettings?.max_accounts,
     isModalOpen,
-    isConfigModalOpen 
+    isConfigModalOpen,
+    isTweetModalOpen
   });
 
   if (error) {
@@ -401,21 +464,21 @@ function BotManagement({ onUpdate, userSettings }) {
                       className="btn btn-primary"
                       onClick={() => handleTestTweet(bot.id, bot.account_name)}
                       disabled={testingBotId === bot.id}
-                      title="テスト投稿"
+                      title="投稿"
                     >
                       {testingBotId === bot.id ? (
                         <>⏳ 投稿中...</>
                       ) : (
                         <>
                           <FaPaperPlane />
-                          テスト投稿
+                          投稿
                         </>
                       )}
                     </button>
                     
                     <button
                       className="btn btn-secondary"
-                      onClick={() => openConfigModal(bot.id)}
+                      onClick={() => openConfigModal(bot)}
                       title="設定"
                     >
                       <FaCog />
@@ -555,74 +618,63 @@ function BotManagement({ onUpdate, userSettings }) {
         </div>
       )}
 
-      {/* Bot設定モーダル */}
+      {/* Bot設定モーダル（新しいデザイン・大きめ） */}
       {isConfigModalOpen && (
         <div className="modal-overlay">
-          <div className="modal">
+          <div className="modal modal-large">
             <div className="modal-header">
-              <h2 className="modal-title">Bot設定</h2>
+              <h2 className="modal-title">
+                Bot設定 - {selectedBotForConfig?.account_name}
+              </h2>
             </div>
             
             <form onSubmit={handleConfigSubmit}>
               <div className="form-group">
-                <label>
-                  <input
-                    type="checkbox"
-                    name="is_enabled"
-                    checked={currentConfig.is_enabled}
-                    onChange={handleConfigChange}
-                  />
-                  Botを有効にする
+                <label className="form-label">
+                  <FaClock /> 投稿予定時間
                 </label>
+                <div className="time-checkbox-grid">
+                  {timeOptions.map((time) => (
+                    <label key={time} className="time-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={scheduledTimes.includes(time)}
+                        onChange={(e) => handleTimeChange(time, e.target.checked)}
+                      />
+                      <span className="time-label">{time}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="selected-times">
+                  {scheduledTimes.length > 0 && (
+                    <p>
+                      選択された時間: {scheduledTimes.sort().join(', ')}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="form-group">
-                <label>
-                  <input
-                    type="checkbox"
-                    name="auto_tweet_enabled"
-                    checked={currentConfig.auto_tweet_enabled}
-                    onChange={handleConfigChange}
-                  />
-                  自動投稿を有効にする
+                <label className="form-label">
+                  <FaFileAlt /> 投稿内容
                 </label>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">投稿間隔（分）</label>
-                <input
-                  type="number"
-                  name="tweet_interval_minutes"
-                  className="form-input"
-                  value={currentConfig.tweet_interval_minutes}
-                  onChange={handleConfigChange}
-                  min="15"
-                  max="1440"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">投稿テンプレート（1行に1つ）</label>
                 <textarea
-                  name="tweet_templates"
                   className="form-textarea"
-                  value={currentConfig.tweet_templates}
-                  onChange={handleConfigChange}
-                  placeholder="今日も一日頑張ろう！&#10;おはようございます！&#10;お疲れ様でした！"
-                  rows={4}
+                  value={postContent}
+                  onChange={(e) => setPostContent(e.target.value)}
+                  placeholder="投稿したい内容を入力してください..."
+                  rows={6}
+                  maxLength={280}
+                  required
                 />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">ハッシュタグ（カンマ区切り）</label>
-                <input
-                  type="text"
-                  name="hashtags"
-                  className="form-input"
-                  value={currentConfig.hashtags}
-                  onChange={handleConfigChange}
-                  placeholder="#bot,#自動投稿,#Twitter"
-                />
+                <div style={{ 
+                  textAlign: 'right', 
+                  fontSize: '12px', 
+                  color: postContent.length > 280 ? '#EF4444' : '#6B7280',
+                  marginTop: '4px'
+                }}>
+                  {postContent.length}/280文字
+                </div>
               </div>
 
               <div className="modal-actions">
@@ -630,7 +682,58 @@ function BotManagement({ onUpdate, userSettings }) {
                   キャンセル
                 </button>
                 <button type="submit" className="btn btn-primary">
-                  保存
+                  設定を保存
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 投稿モーダル */}
+      {isTweetModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2 className="modal-title">
+                投稿作成 - {selectedBotForTweet?.name}
+              </h2>
+            </div>
+            
+            <form onSubmit={handleTweetSubmit}>
+              <div className="form-group">
+                <label className="form-label">
+                  <FaPaperPlane /> 投稿内容
+                </label>
+                <textarea
+                  className="form-textarea"
+                  value={tweetContent}
+                  onChange={(e) => setTweetContent(e.target.value)}
+                  placeholder="投稿したい内容を入力してください..."
+                  rows={4}
+                  maxLength={280}
+                  required
+                />
+                <div style={{ 
+                  textAlign: 'right', 
+                  fontSize: '12px', 
+                  color: tweetContent.length > 280 ? '#EF4444' : '#6B7280',
+                  marginTop: '4px'
+                }}>
+                  {tweetContent.length}/280文字
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>
+                  キャンセル
+                </button>
+                <button 
+                  type="submit" 
+                  className="btn btn-primary"
+                  disabled={testingBotId === selectedBotForTweet?.id || tweetContent.length > 280}
+                >
+                  {testingBotId === selectedBotForTweet?.id ? '投稿中...' : '投稿'}
                 </button>
               </div>
             </form>
