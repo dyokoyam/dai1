@@ -2,7 +2,7 @@
 
 /**
  * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
- * GitHub Actions で実行され、予定されたツイートを投稿する
+ * スケジュール投稿対応
  */
 
 import { TwitterApi } from 'twitter-api-v2';
@@ -16,7 +16,7 @@ const __dirname = dirname(__filename);
 
 // 設定（GitHub Actions対応）
 const config = {
-  dbPath: process.env.DB_PATH || join(__dirname, '../data/twitter-auto-manager.sqlite'),
+  configPath: process.env.CONFIG_PATH || join(__dirname, '../data/github-config.json'),
   logLevel: process.env.LOG_LEVEL || 'info',
   dryRun: process.env.DRY_RUN === 'true',
   timezone: 'Asia/Tokyo'
@@ -35,9 +35,63 @@ const log = {
 };
 
 /**
- * テンプレートベースのツイート生成
+ * 現在時刻（日本時間）を取得
  */
-function generateTweetFromTemplates() {
+function getCurrentJSTTime() {
+  const now = new Date();
+  const jstOffset = 9 * 60; // JST は UTC+9
+  const jstTime = new Date(now.getTime() + (jstOffset * 60 * 1000));
+  return jstTime.toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' });
+}
+
+/**
+ * 現在時刻が投稿時間かチェック
+ */
+function shouldPostNow(scheduledTimes) {
+  if (!scheduledTimes || scheduledTimes.length === 0) {
+    return false;
+  }
+  
+  const now = new Date();
+  const currentHour = now.toLocaleString('en-GB', { 
+    timeZone: 'Asia/Tokyo',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false 
+  });
+  
+  const shouldPost = scheduledTimes.includes(currentHour);
+  
+  log.debug(`Current time (JST): ${currentHour}`);
+  log.debug(`Scheduled times: ${scheduledTimes.join(', ')}`);
+  log.debug(`Should post: ${shouldPost}`);
+  
+  return shouldPost;
+}
+
+/**
+ * 設定ファイルを読み込み
+ */
+function loadConfig() {
+  try {
+    if (!existsSync(config.configPath)) {
+      log.warn(`Configuration file not found: ${config.configPath}`);
+      return null;
+    }
+    
+    const configData = JSON.parse(readFileSync(config.configPath, 'utf8'));
+    log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found`);
+    return configData;
+  } catch (error) {
+    log.error(`Failed to load configuration: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * テンプレートベースのツイート生成（フォールバック用）
+ */
+function generateFallbackTweet() {
   const templates = [
     "こんにちは！今日も良い一日を過ごしましょう！ 🌟",
     "お疲れ様です！素晴らしい一日でした ✨",
@@ -87,23 +141,22 @@ function generateTweetFromTemplates() {
 /**
  * Twitter クライアントを作成
  */
-function createTwitterClient() {
+function createTwitterClient(botConfig) {
   try {
-    const apiKey = process.env.TWITTER_API_KEY;
-    const apiSecret = process.env.TWITTER_API_SECRET;
+    const account = botConfig.account;
     
-    if (!apiKey || !apiSecret) {
-      throw new Error('Twitter API credentials not found in environment variables');
+    if (!account.api_key || !account.api_key_secret || !account.access_token || !account.access_token_secret) {
+      throw new Error('Missing Twitter API credentials');
     }
 
     return new TwitterApi({
-      appKey: apiKey,
-      appSecret: apiSecret,
-      accessToken: process.env.TWITTER_ACCESS_TOKEN || apiKey, // Fallback
-      accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET || apiSecret, // Fallback
+      appKey: account.api_key,
+      appSecret: account.api_key_secret,
+      accessToken: account.access_token,
+      accessSecret: account.access_token_secret,
     });
   } catch (error) {
-    log.error(`Failed to create Twitter client: ${error.message}`);
+    log.error(`Failed to create Twitter client for ${botConfig.account?.account_name}: ${error.message}`);
     throw error;
   }
 }
@@ -111,10 +164,10 @@ function createTwitterClient() {
 /**
  * ツイートを投稿
  */
-async function postTweet(client, content) {
+async function postTweet(client, content, botName) {
   try {
     if (config.dryRun) {
-      log.info(`[DRY RUN] Would post tweet: "${content}"`);
+      log.info(`[DRY RUN] Would post tweet for ${botName}: "${content}"`);
       return {
         data: { id: 'dry_run_' + Date.now(), text: content },
         success: true
@@ -124,37 +177,138 @@ async function postTweet(client, content) {
     const response = await client.v2.tweet(content);
     
     if (response.data) {
-      log.info(`Successfully posted tweet: ${response.data.id}`);
+      log.info(`Successfully posted tweet for ${botName}: ${response.data.id}`);
       return { ...response, success: true };
     } else {
       throw new Error('No data in response');
     }
   } catch (error) {
-    log.error(`Failed to post tweet: ${error.message}`);
+    log.error(`Failed to post tweet for ${botName}: ${error.message}`);
     return { success: false, error: error.message };
   }
 }
 
 /**
- * 過去の投稿をチェック（重複防止）
+ * スケジュール投稿を処理
  */
-function shouldPostNow() {
-  const now = new Date();
-  const hour = now.getHours();
+async function processScheduledPosts(configData) {
+  let successCount = 0;
+  let errorCount = 0;
   
-  // 投稿しない時間帯 (23:00-6:00)
-  if (hour >= 23 || hour < 6) {
-    log.info('🌙 Night time - skipping tweet');
-    return false;
+  for (const botConfig of configData.bots) {
+    const account = botConfig.account;
+    const scheduledContent = botConfig.scheduled_content;
+    const scheduledTimes = botConfig.scheduled_times;
+    
+    // アカウントがアクティブでない場合はスキップ
+    if (account.status !== 'active') {
+      log.debug(`Skipping inactive bot: ${account.account_name}`);
+      continue;
+    }
+    
+    // スケジュール投稿が設定されていない場合はスキップ
+    if (!scheduledContent || !scheduledTimes) {
+      log.debug(`No scheduled post for bot: ${account.account_name}`);
+      continue;
+    }
+    
+    // 投稿時間をチェック
+    const timesArray = scheduledTimes.split(',').map(t => t.trim());
+    if (!shouldPostNow(timesArray)) {
+      log.debug(`Not time to post for bot: ${account.account_name}`);
+      continue;
+    }
+    
+    log.info(`📝 Processing scheduled post for: ${account.account_name}`);
+    
+    try {
+      // Twitter クライアント作成
+      const client = createTwitterClient(botConfig);
+      
+      // ツイート投稿
+      const result = await postTweet(client, scheduledContent, account.account_name);
+      
+      if (result.success) {
+        successCount++;
+        log.info(`✅ Scheduled tweet posted for ${account.account_name}`);
+      } else {
+        errorCount++;
+        log.error(`❌ Scheduled tweet failed for ${account.account_name}: ${result.error}`);
+      }
+      
+    } catch (error) {
+      errorCount++;
+      log.error(`💥 Error processing ${account.account_name}: ${error.message}`);
+    }
+    
+    // レート制限を避けるため少し待機
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
   
-  // ランダムに50%の確率で投稿
+  return { successCount, errorCount };
+}
+
+/**
+ * フォールバック投稿を処理（従来のランダム投稿）
+ */
+async function processFallbackPost() {
+  // ランダムな確率で投稿をスキップ（50%の確率）
   if (Math.random() < 0.5) {
-    log.info('🎲 Random skip - not posting this time');
-    return false;
+    log.info('🎲 Random skip - not posting fallback tweet this time');
+    return { successCount: 0, errorCount: 0 };
   }
   
-  return true;
+  try {
+    // 環境変数から認証情報を取得
+    const apiKey = process.env.TWITTER_API_KEY;
+    const apiSecret = process.env.TWITTER_API_SECRET;
+    const accessToken = process.env.TWITTER_ACCESS_TOKEN;
+    const accessTokenSecret = process.env.TWITTER_ACCESS_TOKEN_SECRET;
+    
+    if (!apiKey || !apiSecret) {
+      log.warn('No fallback Twitter credentials found in environment variables');
+      return { successCount: 0, errorCount: 0 };
+    }
+    
+    const client = new TwitterApi({
+      appKey: apiKey,
+      appSecret: apiSecret,
+      accessToken: accessToken || apiKey,
+      accessSecret: accessTokenSecret || apiSecret,
+    });
+    
+    // フォールバックツイート生成
+    const content = generateFallbackTweet();
+    log.info(`📝 Generated fallback tweet: "${content}"`);
+    
+    // ツイート投稿
+    const result = await postTweet(client, content, 'Fallback Bot');
+    
+    if (result.success) {
+      return { successCount: 1, errorCount: 0 };
+    } else {
+      return { successCount: 0, errorCount: 1 };
+    }
+    
+  } catch (error) {
+    log.error(`💥 Fallback post error: ${error.message}`);
+    return { successCount: 0, errorCount: 1 };
+  }
+}
+
+/**
+ * 夜間時間帯チェック
+ */
+function isNightTime() {
+  const now = new Date();
+  const hour = parseInt(now.toLocaleString('en-GB', { 
+    timeZone: 'Asia/Tokyo',
+    hour: '2-digit',
+    hour12: false 
+  }));
+  
+  // 23:00-6:00は夜間とする
+  return hour >= 23 || hour < 6;
 }
 
 /**
@@ -165,28 +319,44 @@ async function main() {
     log.info('🚀 Starting Twitter Auto Manager posting process...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
+    log.info(`⏰ Current time (JST): ${getCurrentJSTTime()}`);
     
-    // 投稿判定
-    if (!shouldPostNow()) {
-      log.info('✅ Skipping tweet for this run');
+    // 夜間時間帯チェック
+    if (isNightTime()) {
+      log.info('🌙 Night time - skipping all posts');
       return;
     }
     
-    // Twitter クライアント作成
-    const client = createTwitterClient();
+    // 設定ファイルを読み込み
+    const configData = loadConfig();
     
-    // ツイート内容生成
-    const content = generateTweetFromTemplates();
-    log.info(`📝 Generated tweet content: "${content}"`);
+    let totalSuccess = 0;
+    let totalErrors = 0;
     
-    // ツイート投稿
-    const result = await postTweet(client, content);
-    
-    if (result.success) {
-      log.info(`✅ Tweet posted successfully!`);
-      log.info(`🔗 Tweet ID: ${result.data?.id}`);
+    if (configData && configData.bots && configData.bots.length > 0) {
+      log.info(`📋 Processing ${configData.bots.length} configured bots...`);
+      
+      // スケジュール投稿を処理
+      const scheduledResults = await processScheduledPosts(configData);
+      totalSuccess += scheduledResults.successCount;
+      totalErrors += scheduledResults.errorCount;
+      
+      log.info(`📈 Scheduled posts: ${scheduledResults.successCount} success, ${scheduledResults.errorCount} errors`);
     } else {
-      log.error(`❌ Tweet failed: ${result.error}`);
+      log.warn('📄 No configuration found, trying fallback post...');
+      
+      // フォールバック投稿を処理
+      const fallbackResults = await processFallbackPost();
+      totalSuccess += fallbackResults.successCount;
+      totalErrors += fallbackResults.errorCount;
+      
+      log.info(`📈 Fallback posts: ${fallbackResults.successCount} success, ${fallbackResults.errorCount} errors`);
+    }
+    
+    // 結果サマリー
+    log.info(`🏁 Posting process completed: ${totalSuccess} success, ${totalErrors} errors`);
+    
+    if (totalErrors > 0) {
       process.exit(1);
     }
     

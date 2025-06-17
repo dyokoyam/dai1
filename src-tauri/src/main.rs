@@ -75,6 +75,18 @@ struct UserSettings {
     updated_at: String,
 }
 
+// スケジュール投稿
+#[derive(Debug, Serialize, Deserialize)]
+struct ScheduledTweet {
+    id: Option<i64>,
+    account_id: i64,
+    content: String,
+    scheduled_times: String, // カンマ区切りの時間リスト "09:00,12:00,18:00"
+    is_active: bool,
+    created_at: String,
+    updated_at: String,
+}
+
 // 統計情報
 #[derive(Debug, Serialize, Deserialize)]
 struct DashboardStats {
@@ -178,8 +190,8 @@ fn init_database() -> Result<Connection> {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
                 content TEXT NOT NULL,
-                scheduled_time TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
+                scheduled_times TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
@@ -438,6 +450,107 @@ fn update_bot_config(config: BotConfig, state: State<AppState>) -> Result<(), St
     Ok(())
 }
 
+// スケジュール投稿の保存（Bot設定と一緒に呼ばれる）
+#[tauri::command]
+fn save_scheduled_tweet(account_id: i64, scheduled_times: String, content: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let now = Utc::now().to_rfc3339();
+    
+    // 既存のスケジュール投稿を無効化
+    conn.execute(
+        "UPDATE scheduled_tweets SET is_active = 0, updated_at = ? WHERE account_id = ?",
+        params![now, account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    
+    // 新しいスケジュール投稿を作成
+    if !scheduled_times.is_empty() && !content.trim().is_empty() {
+        conn.execute(
+            "INSERT INTO scheduled_tweets (account_id, content, scheduled_times, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, 1, ?, ?)",
+            params![account_id, content, scheduled_times, now, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+// スケジュール投稿管理
+#[tauri::command]
+fn add_scheduled_tweet(tweet: ScheduledTweet, state: State<AppState>) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let now = Utc::now().to_rfc3339();
+    
+    conn.execute(
+        "INSERT INTO scheduled_tweets (account_id, content, scheduled_times, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        params![
+            tweet.account_id,
+            tweet.content,
+            tweet.scheduled_times,
+            tweet.is_active,
+            now,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    
+    Ok(conn.last_insert_rowid())
+}
+
+#[tauri::command]
+fn get_scheduled_tweets(account_id: Option<i64>, state: State<AppState>) -> Result<Vec<ScheduledTweet>, String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    
+    let tweets = match account_id {
+        Some(id) => {
+            let mut stmt = conn.prepare(
+                "SELECT * FROM scheduled_tweets WHERE account_id = ? AND is_active = 1 ORDER BY created_at DESC"
+            ).map_err(|e| e.to_string())?;
+            
+            let rows = stmt.query_map(params![id], |row| {
+                Ok(ScheduledTweet {
+                    id: row.get(0)?,
+                    account_id: row.get(1)?,
+                    content: row.get(2)?,
+                    scheduled_times: row.get(3)?,
+                    is_active: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+            rows.collect::<SqliteResult<Vec<_>>>()
+                .map_err(|e| e.to_string())?
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT * FROM scheduled_tweets WHERE is_active = 1 ORDER BY created_at DESC"
+            ).map_err(|e| e.to_string())?;
+            
+            let rows = stmt.query_map([], |row| {
+                Ok(ScheduledTweet {
+                    id: row.get(0)?,
+                    account_id: row.get(1)?,
+                    content: row.get(2)?,
+                    scheduled_times: row.get(3)?,
+                    is_active: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+            rows.collect::<SqliteResult<Vec<_>>>()
+                .map_err(|e| e.to_string())?
+        }
+    };
+    
+    Ok(tweets)
+}
+
 // 実行ログ管理
 #[tauri::command]
 fn get_execution_logs(account_id: Option<i64>, limit: Option<i32>, state: State<AppState>) -> Result<Vec<ExecutionLog>, String> {
@@ -584,6 +697,26 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     let accounts: Vec<BotAccount> = accounts_rows.collect::<SqliteResult<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     
+    // スケジュール投稿を取得
+    let mut scheduled_stmt = conn.prepare("SELECT * FROM scheduled_tweets WHERE is_active = 1 ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    
+    let scheduled_rows = scheduled_stmt.query_map([], |row| {
+        Ok(ScheduledTweet {
+            id: row.get(0)?,
+            account_id: row.get(1)?,
+            content: row.get(2)?,
+            scheduled_times: row.get(3)?,
+            is_active: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })
+    .map_err(|e| e.to_string())?;
+    
+    let scheduled_tweets: Vec<ScheduledTweet> = scheduled_rows.collect::<SqliteResult<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    
     // 実行ログを取得
     let mut logs_stmt = conn.prepare("SELECT * FROM execution_logs ORDER BY created_at DESC LIMIT 1000")
         .map_err(|e| e.to_string())?;
@@ -624,6 +757,7 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     // エクスポートデータを構成
     let export_data = serde_json::json!({
         "bot_accounts": accounts,
+        "scheduled_tweets": scheduled_tweets,
         "execution_logs": logs,
         "user_settings": settings,
         "exported_at": Utc::now().to_rfc3339()
@@ -631,6 +765,62 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     
     // ファイルに書き込み
     fs::write(path, serde_json::to_string_pretty(&export_data).unwrap())
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// GitHub Actions用の設定ファイル出力
+#[tauri::command]
+fn export_github_config(path: String, state: State<AppState>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    
+    // アクティブなBot一覧を取得
+    let mut stmt = conn.prepare(
+        "SELECT ba.*, st.content, st.scheduled_times 
+         FROM bot_accounts ba 
+         LEFT JOIN scheduled_tweets st ON ba.id = st.account_id AND st.is_active = 1
+         WHERE ba.status = 'active'
+         ORDER BY ba.created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        let account = BotAccount {
+            id: row.get(0)?,
+            account_name: row.get(1)?,
+            api_key: row.get(2)?,
+            api_key_secret: row.get(3)?,
+            access_token: row.get(4)?,
+            access_token_secret: row.get(5)?,
+            api_type: row.get(6)?,
+            status: row.get(7)?,
+            created_at: Some(row.get(8)?),
+            updated_at: Some(row.get(9)?),
+        };
+        
+        let scheduled_content: Option<String> = row.get(10).ok();
+        let scheduled_times: Option<String> = row.get(11).ok();
+        
+        Ok(serde_json::json!({
+            "account": account,
+            "scheduled_content": scheduled_content,
+            "scheduled_times": scheduled_times
+        }))
+    })
+    .map_err(|e| e.to_string())?;
+    
+    let bot_configs: Vec<_> = rows.collect::<SqliteResult<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    
+    // GitHub Actions用設定
+    let github_config = serde_json::json!({
+        "version": "1.0",
+        "bots": bot_configs,
+        "updated_at": Utc::now().to_rfc3339()
+    });
+    
+    // GitHub Actions用設定ファイルを書き込み
+    fs::write(path, serde_json::to_string_pretty(&github_config).unwrap())
         .map_err(|e| e.to_string())?;
     
     Ok(())
@@ -898,7 +1088,11 @@ fn main() {
             get_user_settings,
             update_user_settings,
             export_data,
-            test_tweet
+            export_github_config,
+            test_tweet,
+            add_scheduled_tweet,
+            get_scheduled_tweets,
+            save_scheduled_tweet
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

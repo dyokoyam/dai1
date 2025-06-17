@@ -219,17 +219,15 @@ function BotManagement({ onUpdate, userSettings }) {
     }
     
     try {
-      // 設定を保存（実際のAPIに合わせて調整が必要）
-      const configData = {
-        ...currentConfig,
-        account_id: selectedBotForConfig.id,
-        scheduled_times: scheduledTimes.join(','),
-        post_content: postContent
-      };
+      // スケジュール投稿を保存
+      await invoke('save_scheduled_tweet', {
+        accountId: selectedBotForConfig.id,
+        scheduledTimes: scheduledTimes.join(','),
+        content: postContent
+      });
       
-      await invoke('update_bot_config', { config: configData });
-      console.log('Bot config saved successfully');
-      alert('Bot設定を保存しました！');
+      console.log('Scheduled tweet saved successfully');
+      alert('Bot設定を保存しました！選択した時間に自動投稿されます。');
       fetchBotAccounts();
       if (onUpdate) onUpdate();
       closeModal();

@@ -1,14 +1,16 @@
 // components/Settings.jsx
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { FaSave, FaUpload, FaInfoCircle, FaCog, FaDatabase, FaShieldAlt } from 'react-icons/fa';
+import { FaSave, FaUpload, FaInfoCircle, FaCog, FaDatabase, FaShieldAlt, FaGithub } from 'react-icons/fa';
 import './Settings.css';
 
 function Settings({ userSettings, onSettingsUpdate }) {
   const [exportPath, setExportPath] = useState('');
   const [importPath, setImportPath] = useState('');
+  const [gitHubExportPath, setGitHubExportPath] = useState('data/github-config.json');
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isGitHubExporting, setIsGitHubExporting] = useState(false);
   const [message, setMessage] = useState(null);
   const [appSettings, setAppSettings] = useState({
     autoStart: false,
@@ -36,6 +38,15 @@ function Settings({ userSettings, onSettingsUpdate }) {
     }
   };
 
+  const selectGitHubExportPath = () => {
+    // 簡易版：ユーザーに手動でパスを入力してもらう
+    const path = prompt('GitHub Actions用設定ファイルの保存先を入力してください：', 
+      'data/github-config.json');
+    if (path) {
+      setGitHubExportPath(path);
+    }
+  };
+
   const handleExport = async () => {
     if (!exportPath) {
       setMessage({ type: 'error', text: 'エクスポート先を選択してください' });
@@ -58,6 +69,31 @@ function Settings({ userSettings, onSettingsUpdate }) {
       setMessage({ type: 'error', text: `エクスポートに失敗しました: ${error}` });
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const handleGitHubExport = async () => {
+    if (!gitHubExportPath) {
+      setMessage({ type: 'error', text: 'GitHub Actions用設定ファイルの保存先を選択してください' });
+      return;
+    }
+    
+    setIsGitHubExporting(true);
+    setMessage(null);
+    
+    try {
+      console.log('Exporting GitHub config to:', gitHubExportPath);
+      await invoke('export_github_config', { path: gitHubExportPath });
+      setMessage({ 
+        type: 'success', 
+        text: `GitHub Actions用設定を正常にエクスポートしました: ${gitHubExportPath}\n\nこのファイルをGitHubリポジトリにコミットしてください。` 
+      });
+      setGitHubExportPath('data/github-config.json');
+    } catch (error) {
+      console.error('GitHub export failed:', error);
+      setMessage({ type: 'error', text: `GitHub Actions用設定のエクスポートに失敗しました: ${error}` });
+    } finally {
+      setIsGitHubExporting(false);
     }
   };
 
@@ -222,6 +258,57 @@ function Settings({ userSettings, onSettingsUpdate }) {
         </div>
       </div>
 
+      {/* GitHub Actions連携 */}
+      <div className="card">
+        <div className="card-header">
+          <h2 className="card-title">
+            <FaGithub className="card-icon" />
+            GitHub Actions連携
+          </h2>
+        </div>
+        
+        <div className="backup-grid">
+          <div className="backup-option">
+            <div className="backup-header">
+              <FaGithub className="backup-icon export" />
+              <div>
+                <h3>スケジュール投稿設定エクスポート</h3>
+                <p>Bot設定で指定したスケジュール投稿をGitHub Actionsで実行するための設定ファイルを出力します</p>
+              </div>
+            </div>
+            
+            <div className="backup-content">
+              <div className="backup-warning">
+                <FaShieldAlt className="warning-icon" />
+                <span>このファイルにはAPI認証情報が含まれます。GitHubリポジトリにコミットする際はご注意ください</span>
+              </div>
+              
+              <div className="path-selector">
+                <input
+                  type="text"
+                  className="form-input"
+                  value={gitHubExportPath}
+                  onChange={(e) => setGitHubExportPath(e.target.value)}
+                  placeholder="保存先: data/github-config.json"
+                />
+                <button className="btn btn-secondary" onClick={selectGitHubExportPath}>
+                  パス設定
+                </button>
+              </div>
+              
+              <button 
+                className="btn btn-primary"
+                onClick={handleGitHubExport}
+                disabled={isGitHubExporting || !gitHubExportPath}
+              >
+                <FaGithub />
+                {isGitHubExporting ? 'エクスポート中...' : 'GitHub Actions用設定をエクスポート'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* データバックアップ */}
       <div className="card">
         <div className="card-header">
@@ -354,6 +441,7 @@ function Settings({ userSettings, onSettingsUpdate }) {
             <p>
               <strong>Twitter Auto Manager</strong> は、Twitter Bot の自動運用を支援するデスクトップアプリケーションです。
               複数のTwitterアカウントを効率的に管理し、スケジュールに基づいた自動投稿を実現します。
+              GitHub Actionsとの連携により、24時間365日の自動投稿が可能です。
             </p>
           </div>
         </div>
