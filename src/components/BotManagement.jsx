@@ -96,6 +96,7 @@ function BotManagement({ onUpdate, userSettings }) {
     setSelectedBotForConfig(bot);
     
     try {
+      // Bot設定を取得
       const config = await invoke('get_bot_config', { accountId: bot.id });
       console.log('Bot config loaded:', config);
       setCurrentConfig({
@@ -104,9 +105,28 @@ function BotManagement({ onUpdate, userSettings }) {
         hashtags: config.hashtags || ''
       });
       
-      // 初期値設定
-      setScheduledTimes([]);
-      setPostContent('');
+      // スケジュール投稿データを取得
+      try {
+        const scheduledTweets = await invoke('get_scheduled_tweets', { accountId: bot.id });
+        console.log('Scheduled tweets loaded:', scheduledTweets);
+        
+        if (scheduledTweets && scheduledTweets.length > 0) {
+          // 最新のスケジュール投稿データを使用
+          const latestSchedule = scheduledTweets[0];
+          const times = latestSchedule.scheduled_times ? latestSchedule.scheduled_times.split(',') : [];
+          setScheduledTimes(times);
+          setPostContent(latestSchedule.content || '');
+        } else {
+          // データがない場合は初期値
+          setScheduledTimes([]);
+          setPostContent('');
+        }
+      } catch (scheduleError) {
+        console.warn('No scheduled tweets found or error loading:', scheduleError);
+        // スケジュール投稿データがない場合は初期値
+        setScheduledTimes([]);
+        setPostContent('');
+      }
       
       setIsConfigModalOpen(true);
     } catch (error) {
@@ -233,7 +253,7 @@ function BotManagement({ onUpdate, userSettings }) {
       closeModal();
     } catch (error) {
       console.error('Failed to save bot config:', error);
-      alert('Bot 設定の保存に失敗しました。');
+      alert(`Bot 設定の保存に失敗しました。\n\nエラー詳細: ${error}`);
     }
   };
 

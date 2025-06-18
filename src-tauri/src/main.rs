@@ -229,9 +229,148 @@ fn init_database() -> Result<Connection> {
              VALUES ('default', ?, ?)",
             params![now, now],
         )?;
+    } else {
+        // 既存のデータベースに対してマイグレーションを実行
+        run_database_migrations(&conn)?;
     }
     
     Ok(conn)
+}
+
+// データベースマイグレーション
+fn run_database_migrations(conn: &Connection) -> Result<()> {
+    // scheduled_tweets テーブルが存在するかチェック
+    let table_exists: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='scheduled_tweets'",
+        [],
+        |row| row.get(0)
+    ).unwrap_or(0);
+    
+    if table_exists == 0 {
+        // テーブルが存在しない場合は新規作成
+        conn.execute(
+            "CREATE TABLE scheduled_tweets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                scheduled_times TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        println!("Created scheduled_tweets table");
+    } else {
+        // テーブルが存在する場合はカラムをチェック・追加
+        
+        // scheduled_times カラムが存在するかチェック
+        let scheduled_times_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='scheduled_times'",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        
+        if scheduled_times_exists == 0 {
+            // scheduled_times カラムが存在しない場合は追加
+            conn.execute(
+                "ALTER TABLE scheduled_tweets ADD COLUMN scheduled_times TEXT DEFAULT ''",
+                [],
+            )?;
+            println!("Added scheduled_times column to scheduled_tweets table");
+            
+            // 古い scheduled_time カラムからデータを移行（存在する場合）
+            let old_column_exists: i32 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='scheduled_time'",
+                [],
+                |row| row.get(0)
+            ).unwrap_or(0);
+            
+            if old_column_exists > 0 {
+                conn.execute(
+                    "UPDATE scheduled_tweets SET scheduled_times = scheduled_time WHERE scheduled_times = ''",
+                    [],
+                )?;
+                println!("Migrated data from scheduled_time to scheduled_times");
+            }
+        }
+        
+        // is_active カラムが存在するかチェック
+        let is_active_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='is_active'",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        
+        if is_active_exists == 0 {
+            conn.execute(
+                "ALTER TABLE scheduled_tweets ADD COLUMN is_active BOOLEAN DEFAULT 1",
+                [],
+            )?;
+            println!("Added is_active column to scheduled_tweets table");
+        }
+        
+        // status カラムが存在する場合は削除（古い設計）
+        let status_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='status'",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        
+        if status_exists > 0 {
+            // SQLiteでは直接カラムを削除できないので、テーブルを再作成
+            recreate_scheduled_tweets_table(conn)?;
+        }
+    }
+    
+    Ok(())
+}
+
+// scheduled_tweets テーブルを正しい構造で再作成
+fn recreate_scheduled_tweets_table(conn: &Connection) -> Result<()> {
+    // 既存データをバックアップ
+    conn.execute(
+        "CREATE TEMPORARY TABLE scheduled_tweets_backup AS 
+         SELECT id, account_id, content, 
+                COALESCE(scheduled_times, scheduled_time, '') as scheduled_times,
+                COALESCE(is_active, 1) as is_active,
+                created_at, updated_at
+         FROM scheduled_tweets",
+        [],
+    )?;
+    
+    // 古いテーブルを削除
+    conn.execute("DROP TABLE scheduled_tweets", [])?;
+    
+    // 新しいテーブルを作成
+    conn.execute(
+        "CREATE TABLE scheduled_tweets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            scheduled_times TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+    
+    // データを復元
+    conn.execute(
+        "INSERT INTO scheduled_tweets (id, account_id, content, scheduled_times, is_active, created_at, updated_at)
+         SELECT id, account_id, content, scheduled_times, is_active, created_at, updated_at
+         FROM scheduled_tweets_backup",
+        [],
+    )?;
+    
+    // バックアップテーブルを削除
+    conn.execute("DROP TABLE scheduled_tweets_backup", [])?;
+    
+    println!("Recreated scheduled_tweets table with correct structure");
+    Ok(())
 }
 
 // ダッシュボード統計取得
