@@ -813,8 +813,15 @@ fn update_user_settings(settings: UserSettings, state: State<AppState>) -> Resul
 fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     
-    // パスの親ディレクトリを作成（重要な修正点）
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+    // プロジェクトルートのdataディレクトリに保存するようにパスを調整
+    let adjusted_path = if path.starts_with("data/") {
+        format!("../{}", path)
+    } else {
+        path
+    };
+    
+    // パスの親ディレクトリを作成
+    if let Some(parent) = std::path::Path::new(&adjusted_path).parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return Err(format!("ディレクトリ作成エラー: {}", e));
         }
@@ -910,19 +917,28 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     });
     
     // ファイルに書き込み
-    fs::write(path, serde_json::to_string_pretty(&export_data).unwrap())
-        .map_err(|e| e.to_string())?;
+    fs::write(&adjusted_path, serde_json::to_string_pretty(&export_data).unwrap())
+        .map_err(|e| format!("ファイル書き込みエラー ({}): {}", adjusted_path, e))?;
     
+    println!("データエクスポートファイルを作成しました: {}", adjusted_path);
     Ok(())
 }
 
-// GitHub Actions用の設定ファイル出力（修正版：ディレクトリ作成追加）
+// GitHub Actions用の設定ファイル出力（プロジェクトルートのdataディレクトリに保存）
 #[tauri::command]
 fn export_github_config(path: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     
-    // パスの親ディレクトリを作成（重要な修正点）
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+    // プロジェクトルートのdataディレクトリに保存するようにパスを調整
+    let adjusted_path = if path.starts_with("data/") {
+        // src-tauriから見たプロジェクトルートのdataディレクトリ
+        format!("../{}", path)
+    } else {
+        path
+    };
+    
+    // パスの親ディレクトリを作成
+    if let Some(parent) = std::path::Path::new(&adjusted_path).parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return Err(format!("ディレクトリ作成エラー: {}", e));
         }
@@ -973,10 +989,10 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
     });
     
     // GitHub Actions用設定ファイルを書き込み
-    fs::write(&path, serde_json::to_string_pretty(&github_config).unwrap())
-        .map_err(|e| format!("ファイル書き込みエラー ({}): {}", path, e))?;
+    fs::write(&adjusted_path, serde_json::to_string_pretty(&github_config).unwrap())
+        .map_err(|e| format!("ファイル書き込みエラー ({}): {}", adjusted_path, e))?;
     
-    println!("GitHub Actions用設定ファイルを作成しました: {}", path);
+    println!("GitHub Actions用設定ファイルを作成しました: {}", adjusted_path);
     Ok(())
 }
 
