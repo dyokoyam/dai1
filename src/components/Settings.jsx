@@ -1,6 +1,7 @@
 // components/Settings.jsx
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { save, open } from '@tauri-apps/plugin-dialog';
 import { FaSave, FaUpload, FaInfoCircle, FaCog, FaDatabase, FaShieldAlt, FaGithub } from 'react-icons/fa';
 import './Settings.css';
 
@@ -21,29 +22,77 @@ function Settings({ userSettings, onSettingsUpdate }) {
 
   console.log('Settings component rendered with userSettings:', userSettings);
 
-  const selectExportPath = () => {
-    // 簡易版：ユーザーに手動でパスを入力してもらう
-    const path = prompt('エクスポート先のファイルパスを入力してください：', 
-      `twilia-backup-${new Date().toISOString().split('T')[0]}.json`);
-    if (path) {
-      setExportPath(path);
+  // ダイアログでエクスポート先を選択
+  const selectExportPath = async () => {
+    try {
+      const path = await save({
+        title: 'データのエクスポート先を選択',
+        filters: [{
+          name: 'JSON',
+          extensions: ['json']
+        }],
+        defaultPath: `twilia-backup-${new Date().toISOString().split('T')[0]}.json`
+      });
+      if (path) {
+        setExportPath(path);
+      }
+    } catch (error) {
+      console.error('ファイル選択エラー:', error);
+      // フォールバック：プロンプトを使用
+      const path = prompt('エクスポート先のファイルパスを入力してください：', 
+        `twilia-backup-${new Date().toISOString().split('T')[0]}.json`);
+      if (path) {
+        setExportPath(path);
+      }
     }
   };
 
-  const selectImportPath = () => {
-    // 簡易版：ユーザーに手動でパスを入力してもらう
-    const path = prompt('インポートするファイルのパスを入力してください：');
-    if (path) {
-      setImportPath(path);
+  // ダイアログでインポートファイルを選択
+  const selectImportPath = async () => {
+    try {
+      const path = await open({
+        title: 'インポートするファイルを選択',
+        filters: [{
+          name: 'JSON',
+          extensions: ['json']
+        }],
+        multiple: false
+      });
+      if (path) {
+        setImportPath(path);
+      }
+    } catch (error) {
+      console.error('ファイル選択エラー:', error);
+      // フォールバック：プロンプトを使用
+      const path = prompt('インポートするファイルのパスを入力してください：');
+      if (path) {
+        setImportPath(path);
+      }
     }
   };
 
-  const selectGitHubExportPath = () => {
-    // 簡易版：ユーザーに手動でパスを入力してもらう
-    const path = prompt('GitHub Actions用設定ファイルの保存先を入力してください：', 
-      'data/github-config.json');
-    if (path) {
-      setGitHubExportPath(path);
+  // ダイアログでGitHub設定ファイルの保存先を選択
+  const selectGitHubExportPath = async () => {
+    try {
+      const path = await save({
+        title: 'GitHub Actions用設定ファイルの保存先を選択',
+        filters: [{
+          name: 'JSON',
+          extensions: ['json']
+        }],
+        defaultPath: 'data/github-config.json'
+      });
+      if (path) {
+        setGitHubExportPath(path);
+      }
+    } catch (error) {
+      console.error('ファイル選択エラー:', error);
+      // フォールバック：プロンプトを使用
+      const path = prompt('GitHub Actions用設定ファイルの保存先を入力してください：', 
+        'data/github-config.json');
+      if (path) {
+        setGitHubExportPath(path);
+      }
     }
   };
 
@@ -292,7 +341,7 @@ function Settings({ userSettings, onSettingsUpdate }) {
                   placeholder="保存先: data/github-config.json"
                 />
                 <button className="btn btn-secondary" onClick={selectGitHubExportPath}>
-                  パス設定
+                  ファイル選択
                 </button>
               </div>
               
@@ -338,7 +387,7 @@ function Settings({ userSettings, onSettingsUpdate }) {
                   placeholder="保存先パスを入力または下記ボタンで設定..."
                 />
                 <button className="btn btn-secondary" onClick={selectExportPath}>
-                  パス設定
+                  ファイル選択
                 </button>
               </div>
               
@@ -377,7 +426,7 @@ function Settings({ userSettings, onSettingsUpdate }) {
                   placeholder="インポートファイルのパスを入力または下記ボタンで設定..."
                 />
                 <button className="btn btn-secondary" onClick={selectImportPath}>
-                  パス設定
+                  ファイル選択
                 </button>
               </div>
               

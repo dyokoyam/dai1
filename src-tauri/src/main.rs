@@ -813,6 +813,13 @@ fn update_user_settings(settings: UserSettings, state: State<AppState>) -> Resul
 fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     
+    // パスの親ディレクトリを作成（重要な修正点）
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(format!("ディレクトリ作成エラー: {}", e));
+        }
+    }
+    
     // アカウント情報を取得
     let mut stmt = conn.prepare("SELECT * FROM bot_accounts ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
@@ -909,10 +916,17 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-// GitHub Actions用の設定ファイル出力
+// GitHub Actions用の設定ファイル出力（修正版：ディレクトリ作成追加）
 #[tauri::command]
 fn export_github_config(path: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    
+    // パスの親ディレクトリを作成（重要な修正点）
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(format!("ディレクトリ作成エラー: {}", e));
+        }
+    }
     
     // アクティブなBot一覧を取得
     let mut stmt = conn.prepare(
@@ -959,9 +973,10 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
     });
     
     // GitHub Actions用設定ファイルを書き込み
-    fs::write(path, serde_json::to_string_pretty(&github_config).unwrap())
-        .map_err(|e| e.to_string())?;
+    fs::write(&path, serde_json::to_string_pretty(&github_config).unwrap())
+        .map_err(|e| format!("ファイル書き込みエラー ({}): {}", path, e))?;
     
+    println!("GitHub Actions用設定ファイルを作成しました: {}", path);
     Ok(())
 }
 
