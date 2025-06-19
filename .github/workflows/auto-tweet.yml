@@ -28,7 +28,8 @@ jobs:
             echo "✅ GitHub config file found"
             cat data/github-config.json | jq '.bots | length' || echo "Config file exists but not valid JSON"
           else
-            echo "⚠️  No GitHub config file found, will use fallback posting"
+            echo "❌ GitHub config file not found. Please export configuration from Tauri app."
+            exit 1
           fi
 
       - name: Run scheduled tweet poster
@@ -36,11 +37,6 @@ jobs:
           cd scripts  
           node post-tweets.js
         env:
-          # 既存のBot用認証情報（フォールバック用）
-          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
-          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
-          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
-          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
           # スケジュール投稿用設定
           CONFIG_PATH: ../data/github-config.json
           LOG_LEVEL: info

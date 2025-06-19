@@ -2,7 +2,7 @@
 
 /**
  * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
- * スケジュール投稿対応
+ * スケジュール投稿専用版（GitHub Secretsフォールバック機能削除）
  */
 
 import { TwitterApi } from 'twitter-api-v2';
@@ -75,7 +75,7 @@ function shouldPostNow(scheduledTimes) {
 function loadConfig() {
   try {
     if (!existsSync(config.configPath)) {
-      log.warn(`Configuration file not found: ${config.configPath}`);
+      log.error(`Configuration file not found: ${config.configPath}`);
       return null;
     }
     
@@ -86,56 +86,6 @@ function loadConfig() {
     log.error(`Failed to load configuration: ${error.message}`);
     return null;
   }
-}
-
-/**
- * テンプレートベースのツイート生成（フォールバック用）
- */
-function generateFallbackTweet() {
-  const templates = [
-    "こんにちは！今日も良い一日を過ごしましょう！ 🌟",
-    "お疲れ様です！素晴らしい一日でした ✨",
-    "今日も Twitter Auto Manager で自動投稿中です 🤖",
-    "技術の力で日常をもっと便利に！ 💻",
-    "自動化って素晴らしいですね 🚀",
-    "毎日の作業を効率化して、大切なことに時間を使いましょう ⏰",
-    "プログラミングの楽しさを日々実感しています 💡",
-    "新しい技術にチャレンジする日々です 📚"
-  ];
-
-  const hashtags = [
-    "#自動投稿",
-    "#Twitter",
-    "#プログラミング", 
-    "#効率化",
-    "#Tech",
-    "#Bot"
-  ];
-
-  // ランダムにテンプレートを選択
-  const template = templates[Math.floor(Math.random() * templates.length)];
-  
-  // ランダムにハッシュタグを1-2個選択
-  const selectedHashtags = hashtags
-    .sort(() => 0.5 - Math.random())
-    .slice(0, Math.floor(Math.random() * 2) + 1)
-    .join(' ');
-
-  // 時刻情報を追加（30%の確率）
-  let content = template;
-  if (Math.random() < 0.3) {
-    const now = new Date();
-    const timeString = now.toLocaleString('ja-JP', { 
-      timeZone: 'Asia/Tokyo',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-    content += ` (${timeString})`;
-  }
-
-  content += ` ${selectedHashtags}`;
-  
-  return content;
 }
 
 /**
@@ -249,54 +199,6 @@ async function processScheduledPosts(configData) {
 }
 
 /**
- * フォールバック投稿を処理（従来のランダム投稿）
- */
-async function processFallbackPost() {
-  // ランダムな確率で投稿をスキップ（50%の確率）
-  if (Math.random() < 0.5) {
-    log.info('🎲 Random skip - not posting fallback tweet this time');
-    return { successCount: 0, errorCount: 0 };
-  }
-  
-  try {
-    // 環境変数から認証情報を取得
-    const apiKey = process.env.TWITTER_API_KEY;
-    const apiSecret = process.env.TWITTER_API_SECRET;
-    const accessToken = process.env.TWITTER_ACCESS_TOKEN;
-    const accessTokenSecret = process.env.TWITTER_ACCESS_TOKEN_SECRET;
-    
-    if (!apiKey || !apiSecret) {
-      log.warn('No fallback Twitter credentials found in environment variables');
-      return { successCount: 0, errorCount: 0 };
-    }
-    
-    const client = new TwitterApi({
-      appKey: apiKey,
-      appSecret: apiSecret,
-      accessToken: accessToken || apiKey,
-      accessSecret: accessTokenSecret || apiSecret,
-    });
-    
-    // フォールバックツイート生成
-    const content = generateFallbackTweet();
-    log.info(`📝 Generated fallback tweet: "${content}"`);
-    
-    // ツイート投稿
-    const result = await postTweet(client, content, 'Fallback Bot');
-    
-    if (result.success) {
-      return { successCount: 1, errorCount: 0 };
-    } else {
-      return { successCount: 0, errorCount: 1 };
-    }
-    
-  } catch (error) {
-    log.error(`💥 Fallback post error: ${error.message}`);
-    return { successCount: 0, errorCount: 1 };
-  }
-}
-
-/**
  * 夜間時間帯チェック
  */
 function isNightTime() {
@@ -330,33 +232,21 @@ async function main() {
     // 設定ファイルを読み込み
     const configData = loadConfig();
     
-    let totalSuccess = 0;
-    let totalErrors = 0;
-    
-    if (configData && configData.bots && configData.bots.length > 0) {
-      log.info(`📋 Processing ${configData.bots.length} configured bots...`);
-      
-      // スケジュール投稿を処理
-      const scheduledResults = await processScheduledPosts(configData);
-      totalSuccess += scheduledResults.successCount;
-      totalErrors += scheduledResults.errorCount;
-      
-      log.info(`📈 Scheduled posts: ${scheduledResults.successCount} success, ${scheduledResults.errorCount} errors`);
-    } else {
-      log.warn('📄 No configuration found, trying fallback post...');
-      
-      // フォールバック投稿を処理
-      const fallbackResults = await processFallbackPost();
-      totalSuccess += fallbackResults.successCount;
-      totalErrors += fallbackResults.errorCount;
-      
-      log.info(`📈 Fallback posts: ${fallbackResults.successCount} success, ${fallbackResults.errorCount} errors`);
+    if (!configData || !configData.bots || configData.bots.length === 0) {
+      log.error('❌ No bot configuration found. Please export GitHub Actions config from the Tauri app.');
+      process.exit(1);
     }
     
-    // 結果サマリー
-    log.info(`🏁 Posting process completed: ${totalSuccess} success, ${totalErrors} errors`);
+    log.info(`📋 Processing ${configData.bots.length} configured bots...`);
     
-    if (totalErrors > 0) {
+    // スケジュール投稿を処理
+    const results = await processScheduledPosts(configData);
+    
+    // 結果サマリー
+    log.info(`📈 Scheduled posts: ${results.successCount} success, ${results.errorCount} errors`);
+    log.info(`🏁 Posting process completed: ${results.successCount} success, ${results.errorCount} errors`);
+    
+    if (results.errorCount > 0) {
       process.exit(1);
     }
     
