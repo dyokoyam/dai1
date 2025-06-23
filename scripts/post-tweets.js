@@ -2,7 +2,7 @@
 
 /**
  * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
- * スケジュール投稿専用版（GitHub Secretsフォールバック機能削除）
+ * スケジュール投稿専用版（時間範囲判定対応）
  */
 
 import { TwitterApi } from 'twitter-api-v2';
@@ -45,25 +45,34 @@ function getCurrentJSTTime() {
 }
 
 /**
- * 現在時刻が投稿時間かチェック
+ * 現在時刻が投稿時間かチェック（時間範囲判定・日本時刻基準）
  */
 function shouldPostNow(scheduledTimes) {
   if (!scheduledTimes || scheduledTimes.length === 0) {
     return false;
   }
   
-  const now = new Date();
-  const currentHour = now.toLocaleString('en-GB', { 
+  // 日本時刻で現在時刻を取得（HH:MM形式）
+  const currentTime = new Date().toLocaleString('en-GB', { 
     timeZone: 'Asia/Tokyo',
     hour: '2-digit',
     minute: '2-digit',
     hour12: false 
   });
   
-  const shouldPost = scheduledTimes.includes(currentHour);
+  // 現在の「時」のみ抽出（例：01:39 → 01）
+  const currentHour = currentTime.split(':')[0];
   
-  log.debug(`Current time (JST): ${currentHour}`);
+  // 設定されたスケジュール時間から「時」のみ抽出
+  const scheduledHours = scheduledTimes.map(time => time.split(':')[0]);
+  
+  // 時間範囲でマッチング
+  const shouldPost = scheduledHours.includes(currentHour);
+  
+  log.debug(`Current time (JST): ${currentTime}`);
+  log.debug(`Current hour: ${currentHour}`);
   log.debug(`Scheduled times: ${scheduledTimes.join(', ')}`);
+  log.debug(`Scheduled hours: ${scheduledHours.join(', ')}`);
   log.debug(`Should post: ${shouldPost}`);
   
   return shouldPost;
@@ -75,7 +84,7 @@ function shouldPostNow(scheduledTimes) {
 function loadConfig() {
   try {
     if (!existsSync(config.configPath)) {
-      log.error(`Configuration file not found: ${config.configPath}`);
+      log.warn(`Configuration file not found: ${config.configPath}`);
       return null;
     }
     
@@ -162,10 +171,10 @@ async function processScheduledPosts(configData) {
       continue;
     }
     
-    // 投稿時間をチェック
+    // 投稿時間をチェック（時間範囲判定）
     const timesArray = scheduledTimes.split(',').map(t => t.trim());
     if (!shouldPostNow(timesArray)) {
-      log.debug(`Not time to post for bot: ${account.account_name}`);
+      log.debug(`Not time to post for bot: ${account.account_name} (current hour doesn't match scheduled hours)`);
       continue;
     }
     
@@ -199,18 +208,18 @@ async function processScheduledPosts(configData) {
 }
 
 /**
- * 夜間時間帯チェック
+ * 日本時刻での現在時刻を取得
  */
-function isNightTime() {
-  const now = new Date();
-  const hour = parseInt(now.toLocaleString('en-GB', { 
+function getJapanTime() {
+  return new Date().toLocaleString('ja-JP', { 
     timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: '2-digit',
-    hour12: false 
-  }));
-  
-  // 23:00-6:00は夜間とする
-  return hour >= 23 || hour < 6;
+    minute: '2-digit',
+    second: '2-digit'
+  });
 }
 
 /**
@@ -221,32 +230,27 @@ async function main() {
     log.info('🚀 Starting Twitter Auto Manager posting process...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
-    log.info(`⏰ Current time (JST): ${getCurrentJSTTime()}`);
-    
-    // 夜間時間帯チェック
-    if (isNightTime()) {
-      log.info('🌙 Night time - skipping all posts');
-      return;
-    }
+    log.info(`⏰ Current time (JST): ${getJapanTime()}`);
     
     // 設定ファイルを読み込み
     const configData = loadConfig();
     
     if (!configData || !configData.bots || configData.bots.length === 0) {
-      log.error('❌ No bot configuration found. Please export GitHub Actions config from the Tauri app.');
+      log.error('❌ No configuration found or no bots configured');
       process.exit(1);
     }
-    
+
     log.info(`📋 Processing ${configData.bots.length} configured bots...`);
     
     // スケジュール投稿を処理
-    const results = await processScheduledPosts(configData);
+    const scheduledResults = await processScheduledPosts(configData);
+    
+    log.info(`📈 Scheduled posts: ${scheduledResults.successCount} success, ${scheduledResults.errorCount} errors`);
     
     // 結果サマリー
-    log.info(`📈 Scheduled posts: ${results.successCount} success, ${results.errorCount} errors`);
-    log.info(`🏁 Posting process completed: ${results.successCount} success, ${results.errorCount} errors`);
+    log.info(`🏁 Posting process completed: ${scheduledResults.successCount} success, ${scheduledResults.errorCount} errors`);
     
-    if (results.errorCount > 0) {
+    if (scheduledResults.errorCount > 0) {
       process.exit(1);
     }
     
