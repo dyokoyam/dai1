@@ -94,20 +94,23 @@ function saveConfig(configData) {
   try {
     if (config.dryRun) {
       log.info(`[DRY RUN] Would save updated config to: ${config.configPath}`);
-      return;
+      return true;
     }
     
     writeFileSync(config.configPath, JSON.stringify(configData, null, 2), 'utf8');
-    log.debug(`Configuration saved to: ${config.configPath}`);
+    log.info(`✅ Configuration saved with updated indices to: ${config.configPath}`);
+    return true;
   } catch (error) {
-    log.error(`Failed to save configuration: ${error.message}`);
+    log.error(`❌ Failed to save configuration: ${error.message}`);
+    log.warn(`⚠️ Continuing with in-memory index management`);
+    return false;
   }
 }
 
 /**
- * 投稿内容を取得（リスト対応版）
+ * 投稿内容を取得（リスト対応版・メモリインデックス考慮）
  */
-function getPostContent(botConfig) {
+function getPostContentWithMemoryIndex(botConfig, memoryIndices, accountName) {
   // 投稿リスト形式の場合
   if (botConfig.scheduled_content_list) {
     try {
@@ -117,11 +120,21 @@ function getPostContent(botConfig) {
         : botConfig.scheduled_content_list;
       
       if (!Array.isArray(contentList) || contentList.length === 0) {
-        log.warn(`Empty or invalid content list for bot: ${botConfig.account?.account_name}`);
+        log.warn(`Empty or invalid content list for bot: ${accountName}`);
         return null;
       }
       
-      const currentIndex = botConfig.current_index || 0;
+      // メモリインデックスを優先、なければ設定ファイルのインデックス
+      let currentIndex;
+      if (memoryIndices.has(accountName)) {
+        currentIndex = memoryIndices.get(accountName);
+        log.debug(`Using memory index for ${accountName}: ${currentIndex}`);
+      } else {
+        currentIndex = botConfig.current_index || 0;
+        memoryIndices.set(accountName, currentIndex);
+        log.debug(`Initialized memory index for ${accountName}: ${currentIndex}`);
+      }
+      
       const safeIndex = currentIndex % contentList.length; // 配列範囲を超えた場合の安全策
       
       log.debug(`Content list length: ${contentList.length}, current index: ${currentIndex}, safe index: ${safeIndex}`);
@@ -133,7 +146,7 @@ function getPostContent(botConfig) {
         listLength: contentList.length
       };
     } catch (error) {
-      log.error(`Failed to parse content list for bot ${botConfig.account?.account_name}: ${error.message}`);
+      log.error(`Failed to parse content list for bot ${accountName}: ${error.message}`);
       return null;
     }
   }
@@ -150,9 +163,9 @@ function getPostContent(botConfig) {
 }
 
 /**
- * 投稿インデックスを更新
+ * 投稿インデックスを更新（メモリ管理対応版）
  */
-function updatePostIndex(configData, botIndex) {
+function updatePostIndexWithMemory(configData, botIndex, memoryIndices, accountName) {
   const botConfig = configData.bots[botIndex];
   
   if (botConfig.scheduled_content_list) {
@@ -161,22 +174,29 @@ function updatePostIndex(configData, botIndex) {
         ? JSON.parse(botConfig.scheduled_content_list)
         : botConfig.scheduled_content_list;
       
-      const currentIndex = botConfig.current_index || 0;
+      // 現在のインデックスを取得（メモリ優先）
+      const currentIndex = memoryIndices.has(accountName) 
+        ? memoryIndices.get(accountName) 
+        : (botConfig.current_index || 0);
+      
       const nextIndex = (currentIndex + 1) % contentList.length;
       
-      // インデックスを更新
+      // メモリインデックスを更新
+      memoryIndices.set(accountName, nextIndex);
+      
+      // 設定ファイルのインデックスも更新
       configData.bots[botIndex].current_index = nextIndex;
       
-      log.info(`📈 Updated post index for ${botConfig.account?.account_name}: ${currentIndex} → ${nextIndex}`);
+      log.info(`📈 Updated post index for ${accountName}: ${currentIndex} → ${nextIndex} (memory managed)`);
       
       // 一周した場合の通知
       if (nextIndex === 0 && currentIndex !== 0) {
-        log.info(`🔄 Content list cycle completed for ${botConfig.account?.account_name}, restarting from index 0`);
+        log.info(`🔄 Content list cycle completed for ${accountName}, restarting from index 0`);
       }
       
       return true;
     } catch (error) {
-      log.error(`Failed to update post index for ${botConfig.account?.account_name}: ${error.message}`);
+      log.error(`Failed to update post index for ${accountName}: ${error.message}`);
       return false;
     }
   }
@@ -242,6 +262,9 @@ async function processScheduledPosts(configData) {
   let errorCount = 0;
   let configUpdated = false;
   
+  // メモリ内インデックス管理（同一実行内での重複回避）
+  const memoryIndices = new Map();
+  
   for (let botIndex = 0; botIndex < configData.bots.length; botIndex++) {
     const botConfig = configData.bots[botIndex];
     const account = botConfig.account;
@@ -253,8 +276,8 @@ async function processScheduledPosts(configData) {
       continue;
     }
     
-    // 投稿内容を取得
-    const postInfo = getPostContent(botConfig);
+    // 投稿内容を取得（メモリインデックスを考慮）
+    const postInfo = getPostContentWithMemoryIndex(botConfig, memoryIndices, account.account_name);
     if (!postInfo) {
       log.debug(`No scheduled post content for bot: ${account.account_name}`);
       continue;
@@ -276,6 +299,7 @@ async function processScheduledPosts(configData) {
     if (postInfo.isFromList) {
       log.info(`📝 Processing scheduled post for: ${account.account_name} [${postInfo.currentIndex + 1}/${postInfo.listLength}]`);
       log.debug(`Current content: "${postInfo.content}"`);
+      log.debug(`Using index: ${postInfo.currentIndex} (memory: ${memoryIndices.has(account.account_name)})`);
     } else {
       log.info(`📝 Processing scheduled post for: ${account.account_name} [single content]`);
     }
@@ -293,7 +317,7 @@ async function processScheduledPosts(configData) {
         
         // 投稿成功時のみインデックスを更新
         if (postInfo.isFromList) {
-          const updated = updatePostIndex(configData, botIndex);
+          const updated = updatePostIndexWithMemory(configData, botIndex, memoryIndices, account.account_name);
           if (updated) {
             configUpdated = true;
           }
@@ -306,7 +330,7 @@ async function processScheduledPosts(configData) {
         if (result.error && result.error.includes('403')) {
           log.warn(`⚠️ Duplicate content detected for ${account.account_name}, advancing index`);
           if (postInfo.isFromList) {
-            const updated = updatePostIndex(configData, botIndex);
+            const updated = updatePostIndexWithMemory(configData, botIndex, memoryIndices, account.account_name);
             if (updated) {
               configUpdated = true;
             }
@@ -323,9 +347,12 @@ async function processScheduledPosts(configData) {
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   
-  // 設定ファイルが更新された場合は保存
+  // 設定ファイルが更新された場合は保存を試行
   if (configUpdated) {
-    saveConfig(configData);
+    const saved = saveConfig(configData);
+    if (!saved) {
+      log.warn(`⚠️ Config file update failed, but memory indices were updated for this execution`);
+    }
   }
   
   return { successCount, errorCount };
@@ -370,10 +397,15 @@ async function main() {
     configData.bots.forEach((botConfig, index) => {
       const account = botConfig.account;
       if (account.status === 'active') {
-        const postInfo = getPostContent(botConfig);
-        if (postInfo && postInfo.isFromList) {
-          log.debug(`Bot ${index + 1}: ${account.account_name} - List: ${postInfo.listLength} items, Current: ${postInfo.currentIndex + 1}`);
-        } else if (postInfo) {
+        if (botConfig.scheduled_content_list) {
+          try {
+            const contentList = JSON.parse(botConfig.scheduled_content_list);
+            const currentIndex = botConfig.current_index || 0;
+            log.debug(`Bot ${index + 1}: ${account.account_name} - List: ${contentList.length} items, Current: ${currentIndex + 1}, Next content: "${contentList[currentIndex] || 'undefined'}"`);
+          } catch (e) {
+            log.debug(`Bot ${index + 1}: ${account.account_name} - Invalid content list`);
+          }
+        } else if (botConfig.scheduled_content) {
           log.debug(`Bot ${index + 1}: ${account.account_name} - Single content mode`);
         }
       }
