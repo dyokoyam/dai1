@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { FaPlus, FaEdit, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaRobot, FaPaperPlane, FaClock, FaFileAlt } from 'react-icons/fa';
+import { FaPlus, FaEdit, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaRobot, FaPaperPlane, FaClock, FaFileAlt, FaTimes, FaArrowUp, FaArrowDown, FaList } from 'react-icons/fa';
 import './BotManagement.css';
 
 function BotManagement({ onUpdate, userSettings }) {
-  console.log('BotManagement rendering - SIMPLIFIED VERSION');
+  console.log('BotManagement rendering - LIST SUPPORT VERSION');
   console.log('userSettings:', userSettings);
   
   const [botAccounts, setBotAccounts] = useState([]);
@@ -19,7 +19,6 @@ function BotManagement({ onUpdate, userSettings }) {
     access_token: '',
     access_token_secret: '',
     status: 'inactive'
-    // created_at と updated_at は自動生成されるので含めない
   });
   const [currentConfig, setCurrentConfig] = useState({
     is_enabled: false,
@@ -36,7 +35,11 @@ function BotManagement({ onUpdate, userSettings }) {
   const [tweetContent, setTweetContent] = useState('');
   const [selectedBotForConfig, setSelectedBotForConfig] = useState(null);
   const [scheduledTimes, setScheduledTimes] = useState([]);
-  const [postContent, setPostContent] = useState('');
+  
+  // 投稿内容リスト管理
+  const [postContentList, setPostContentList] = useState(['']);
+  const [currentPostIndex, setCurrentPostIndex] = useState(0);
+  const [newPostContent, setNewPostContent] = useState('');
 
   // 時間選択肢を生成（0:00〜23:00）
   const timeOptions = Array.from({ length: 24 }, (_, i) => {
@@ -78,7 +81,6 @@ function BotManagement({ onUpdate, userSettings }) {
       access_token: '',
       access_token_secret: '',
       status: 'inactive'
-      // created_at と updated_at は自動生成されるので含めない
     });
     setIsEditing(false);
     setIsModalOpen(true);
@@ -115,17 +117,45 @@ function BotManagement({ onUpdate, userSettings }) {
           const latestSchedule = scheduledTweets[0];
           const times = latestSchedule.scheduled_times ? latestSchedule.scheduled_times.split(',') : [];
           setScheduledTimes(times);
-          setPostContent(latestSchedule.content || '');
+          
+          // 投稿内容リストの処理
+          if (latestSchedule.content_list) {
+            try {
+              const contentList = JSON.parse(latestSchedule.content_list);
+              if (Array.isArray(contentList) && contentList.length > 0) {
+                setPostContentList(contentList);
+                setCurrentPostIndex(latestSchedule.current_index || 0);
+              } else {
+                // 従来形式のフォールバック
+                setPostContentList([latestSchedule.content || '']);
+                setCurrentPostIndex(0);
+              }
+            } catch (parseError) {
+              console.warn('Failed to parse content_list, using fallback:', parseError);
+              setPostContentList([latestSchedule.content || '']);
+              setCurrentPostIndex(0);
+            }
+          } else if (latestSchedule.content) {
+            // 従来形式
+            setPostContentList([latestSchedule.content]);
+            setCurrentPostIndex(0);
+          } else {
+            // 初期値
+            setPostContentList(['']);
+            setCurrentPostIndex(0);
+          }
         } else {
           // データがない場合は初期値
           setScheduledTimes([]);
-          setPostContent('');
+          setPostContentList(['']);
+          setCurrentPostIndex(0);
         }
       } catch (scheduleError) {
         console.warn('No scheduled tweets found or error loading:', scheduleError);
         // スケジュール投稿データがない場合は初期値
         setScheduledTimes([]);
-        setPostContent('');
+        setPostContentList(['']);
+        setCurrentPostIndex(0);
       }
       
       setIsConfigModalOpen(true);
@@ -144,7 +174,9 @@ function BotManagement({ onUpdate, userSettings }) {
     setSelectedBotForTweet(null);
     setSelectedBotForConfig(null);
     setScheduledTimes([]);
-    setPostContent('');
+    setPostContentList(['']);
+    setCurrentPostIndex(0);
+    setNewPostContent('');
   };
 
   const handleInputChange = (e) => {
@@ -168,6 +200,48 @@ function BotManagement({ onUpdate, userSettings }) {
       setScheduledTimes([...scheduledTimes, time]);
     } else {
       setScheduledTimes(scheduledTimes.filter(t => t !== time));
+    }
+  };
+
+  // 投稿内容リスト管理
+  const addPostContent = () => {
+    if (newPostContent.trim()) {
+      setPostContentList([...postContentList, newPostContent.trim()]);
+      setNewPostContent('');
+    }
+  };
+
+  const updatePostContent = (index, content) => {
+    const newList = [...postContentList];
+    newList[index] = content;
+    setPostContentList(newList);
+  };
+
+  const removePostContent = (index) => {
+    if (postContentList.length > 1) {
+      const newList = postContentList.filter((_, i) => i !== index);
+      setPostContentList(newList);
+      // インデックス調整
+      if (currentPostIndex >= newList.length) {
+        setCurrentPostIndex(Math.max(0, newList.length - 1));
+      }
+    }
+  };
+
+  const movePostContent = (index, direction) => {
+    const newList = [...postContentList];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    
+    if (targetIndex >= 0 && targetIndex < newList.length) {
+      [newList[index], newList[targetIndex]] = [newList[targetIndex], newList[index]];
+      setPostContentList(newList);
+      
+      // 現在のインデックスも調整
+      if (currentPostIndex === index) {
+        setCurrentPostIndex(targetIndex);
+      } else if (currentPostIndex === targetIndex) {
+        setCurrentPostIndex(index);
+      }
     }
   };
 
@@ -224,7 +298,8 @@ function BotManagement({ onUpdate, userSettings }) {
     e.preventDefault();
     console.log('Submitting bot config:', {
       scheduledTimes,
-      postContent
+      postContentList,
+      currentPostIndex
     });
     
     // バリデーション
@@ -233,21 +308,23 @@ function BotManagement({ onUpdate, userSettings }) {
       return;
     }
     
-    if (!postContent.trim()) {
-      alert('投稿内容を入力してください。');
+    // 空でない投稿内容のみをフィルタリング
+    const validContentList = postContentList.filter(content => content.trim() !== '');
+    if (validContentList.length === 0) {
+      alert('投稿内容を少なくとも1つ入力してください。');
       return;
     }
     
     try {
-      // スケジュール投稿を保存
-      await invoke('save_scheduled_tweet', {
+      // 投稿内容リストとして保存
+      await invoke('save_scheduled_tweet_list', {
         accountId: selectedBotForConfig.id,
         scheduledTimes: scheduledTimes.join(','),
-        content: postContent
+        contentList: validContentList
       });
       
-      console.log('Scheduled tweet saved successfully');
-      alert('Bot設定を保存しました！選択した時間に自動投稿されます。');
+      console.log('Scheduled tweet list saved successfully');
+      alert(`Bot設定を保存しました！\n\n投稿内容: ${validContentList.length}件\n投稿時間: ${scheduledTimes.length}件\n\n選択した時間に順番に自動投稿されます。`);
       fetchBotAccounts();
       if (onUpdate) onUpdate();
       closeModal();
@@ -636,7 +713,7 @@ function BotManagement({ onUpdate, userSettings }) {
         </div>
       )}
 
-      {/* Bot設定モーダル（新しいデザイン・大きめ） */}
+      {/* Bot設定モーダル（投稿内容リスト対応版） */}
       {isConfigModalOpen && (
         <div className="modal-overlay">
           <div className="modal modal-large">
@@ -674,24 +751,100 @@ function BotManagement({ onUpdate, userSettings }) {
 
               <div className="form-group">
                 <label className="form-label">
-                  <FaFileAlt /> 投稿内容
+                  <FaList /> 投稿内容リスト
                 </label>
-                <textarea
-                  className="form-textarea"
-                  value={postContent}
-                  onChange={(e) => setPostContent(e.target.value)}
-                  placeholder="投稿したい内容を入力してください..."
-                  rows={6}
-                  maxLength={280}
-                  required
-                />
-                <div style={{ 
-                  textAlign: 'right', 
-                  fontSize: '12px', 
-                  color: postContent.length > 280 ? '#EF4444' : '#6B7280',
-                  marginTop: '4px'
-                }}>
-                  {postContent.length}/280文字
+                <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '12px' }}>
+                  複数の投稿内容を登録すると、順番に自動投稿されます。
+                  現在のインデックス: <strong>{currentPostIndex + 1}</strong> / {postContentList.length}
+                </p>
+                
+                {/* 既存の投稿内容リスト */}
+                <div className="post-content-list">
+                  {postContentList.map((content, index) => (
+                    <div key={index} className={`post-content-item ${index === currentPostIndex ? 'current' : ''}`}>
+                      <div className="post-content-header">
+                        <span className="post-content-number">
+                          {index + 1}
+                          {index === currentPostIndex && <span className="current-indicator">← 次回投稿</span>}
+                        </span>
+                        <div className="post-content-actions">
+                          <button
+                            type="button"
+                            className="btn-icon"
+                            onClick={() => movePostContent(index, 'up')}
+                            disabled={index === 0}
+                            title="上に移動"
+                          >
+                            <FaArrowUp />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-icon"
+                            onClick={() => movePostContent(index, 'down')}
+                            disabled={index === postContentList.length - 1}
+                            title="下に移動"
+                          >
+                            <FaArrowDown />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-icon btn-danger"
+                            onClick={() => removePostContent(index)}
+                            disabled={postContentList.length === 1}
+                            title="削除"
+                          >
+                            <FaTimes />
+                          </button>
+                        </div>
+                      </div>
+                      <textarea
+                        className="form-textarea"
+                        value={content}
+                        onChange={(e) => updatePostContent(index, e.target.value)}
+                        placeholder="投稿内容を入力してください..."
+                        rows={3}
+                        maxLength={280}
+                      />
+                      <div style={{ 
+                        textAlign: 'right', 
+                        fontSize: '12px', 
+                        color: content.length > 280 ? '#EF4444' : '#6B7280',
+                        marginTop: '4px'
+                      }}>
+                        {content.length}/280文字
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                
+                {/* 新しい投稿内容追加 */}
+                <div className="add-post-content">
+                  <div className="form-group" style={{ marginBottom: '8px' }}>
+                    <textarea
+                      className="form-textarea"
+                      value={newPostContent}
+                      onChange={(e) => setNewPostContent(e.target.value)}
+                      placeholder="新しい投稿内容を追加..."
+                      rows={3}
+                      maxLength={280}
+                    />
+                    <div style={{ 
+                      textAlign: 'right', 
+                      fontSize: '12px', 
+                      color: newPostContent.length > 280 ? '#EF4444' : '#6B7280',
+                      marginTop: '4px'
+                    }}>
+                      {newPostContent.length}/280文字
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={addPostContent}
+                    disabled={!newPostContent.trim() || newPostContent.length > 280}
+                  >
+                    <FaPlus /> 投稿内容を追加
+                  </button>
                 </div>
               </div>
 

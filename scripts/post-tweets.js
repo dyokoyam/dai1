@@ -2,11 +2,11 @@
 
 /**
  * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
- * スケジュール投稿専用版（時間範囲判定対応）
+ * スケジュール投稿専用版（時間範囲判定対応・投稿内容リスト対応）
  */
 
 import { TwitterApi } from 'twitter-api-v2';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -33,16 +33,6 @@ const log = {
     }
   }
 };
-
-/**
- * 現在時刻（日本時間）を取得
- */
-function getCurrentJSTTime() {
-  const now = new Date();
-  const jstOffset = 9 * 60; // JST は UTC+9
-  const jstTime = new Date(now.getTime() + (jstOffset * 60 * 1000));
-  return jstTime.toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' });
-}
 
 /**
  * 現在時刻が投稿時間かチェック（時間範囲判定・日本時刻基準）
@@ -98,6 +88,103 @@ function loadConfig() {
 }
 
 /**
+ * 設定ファイルを保存（インデックス更新用）
+ */
+function saveConfig(configData) {
+  try {
+    if (config.dryRun) {
+      log.info(`[DRY RUN] Would save updated config to: ${config.configPath}`);
+      return;
+    }
+    
+    writeFileSync(config.configPath, JSON.stringify(configData, null, 2), 'utf8');
+    log.debug(`Configuration saved to: ${config.configPath}`);
+  } catch (error) {
+    log.error(`Failed to save configuration: ${error.message}`);
+  }
+}
+
+/**
+ * 投稿内容を取得（リスト対応版）
+ */
+function getPostContent(botConfig) {
+  // 投稿リスト形式の場合
+  if (botConfig.scheduled_content_list) {
+    try {
+      // JSON文字列をパース
+      const contentList = typeof botConfig.scheduled_content_list === 'string' 
+        ? JSON.parse(botConfig.scheduled_content_list)
+        : botConfig.scheduled_content_list;
+      
+      if (!Array.isArray(contentList) || contentList.length === 0) {
+        log.warn(`Empty or invalid content list for bot: ${botConfig.account?.account_name}`);
+        return null;
+      }
+      
+      const currentIndex = botConfig.current_index || 0;
+      const safeIndex = currentIndex % contentList.length; // 配列範囲を超えた場合の安全策
+      
+      log.debug(`Content list length: ${contentList.length}, current index: ${currentIndex}, safe index: ${safeIndex}`);
+      
+      return {
+        content: contentList[safeIndex],
+        isFromList: true,
+        currentIndex: currentIndex,
+        listLength: contentList.length
+      };
+    } catch (error) {
+      log.error(`Failed to parse content list for bot ${botConfig.account?.account_name}: ${error.message}`);
+      return null;
+    }
+  }
+  
+  // 従来形式の場合（後方互換）
+  if (botConfig.scheduled_content) {
+    return {
+      content: botConfig.scheduled_content,
+      isFromList: false
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * 投稿インデックスを更新
+ */
+function updatePostIndex(configData, botIndex) {
+  const botConfig = configData.bots[botIndex];
+  
+  if (botConfig.scheduled_content_list) {
+    try {
+      const contentList = typeof botConfig.scheduled_content_list === 'string' 
+        ? JSON.parse(botConfig.scheduled_content_list)
+        : botConfig.scheduled_content_list;
+      
+      const currentIndex = botConfig.current_index || 0;
+      const nextIndex = (currentIndex + 1) % contentList.length;
+      
+      // インデックスを更新
+      configData.bots[botIndex].current_index = nextIndex;
+      
+      log.info(`📈 Updated post index for ${botConfig.account?.account_name}: ${currentIndex} → ${nextIndex}`);
+      
+      // 一周した場合の通知
+      if (nextIndex === 0 && currentIndex !== 0) {
+        log.info(`🔄 Content list cycle completed for ${botConfig.account?.account_name}, restarting from index 0`);
+      }
+      
+      return true;
+    } catch (error) {
+      log.error(`Failed to update post index for ${botConfig.account?.account_name}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  return false; // リスト形式でない場合は更新不要
+}
+
+/**
  * Twitter クライアントを作成
  */
 function createTwitterClient(botConfig) {
@@ -148,15 +235,16 @@ async function postTweet(client, content, botName) {
 }
 
 /**
- * スケジュール投稿を処理
+ * スケジュール投稿を処理（リスト対応版）
  */
 async function processScheduledPosts(configData) {
   let successCount = 0;
   let errorCount = 0;
+  let configUpdated = false;
   
-  for (const botConfig of configData.bots) {
+  for (let botIndex = 0; botIndex < configData.bots.length; botIndex++) {
+    const botConfig = configData.bots[botIndex];
     const account = botConfig.account;
-    const scheduledContent = botConfig.scheduled_content;
     const scheduledTimes = botConfig.scheduled_times;
     
     // アカウントがアクティブでない場合はスキップ
@@ -165,34 +253,65 @@ async function processScheduledPosts(configData) {
       continue;
     }
     
-    // スケジュール投稿が設定されていない場合はスキップ
-    if (!scheduledContent || !scheduledTimes) {
-      log.debug(`No scheduled post for bot: ${account.account_name}`);
+    // 投稿内容を取得
+    const postInfo = getPostContent(botConfig);
+    if (!postInfo) {
+      log.debug(`No scheduled post content for bot: ${account.account_name}`);
       continue;
     }
     
-    // 投稿時間をチェック（時間範囲判定）
+    // スケジュール時間をチェック（時間範囲判定）
+    if (!scheduledTimes) {
+      log.debug(`No scheduled times for bot: ${account.account_name}`);
+      continue;
+    }
+    
     const timesArray = scheduledTimes.split(',').map(t => t.trim());
     if (!shouldPostNow(timesArray)) {
       log.debug(`Not time to post for bot: ${account.account_name} (current hour doesn't match scheduled hours)`);
       continue;
     }
     
-    log.info(`📝 Processing scheduled post for: ${account.account_name}`);
+    // 投稿内容の詳細ログ
+    if (postInfo.isFromList) {
+      log.info(`📝 Processing scheduled post for: ${account.account_name} [${postInfo.currentIndex + 1}/${postInfo.listLength}]`);
+      log.debug(`Current content: "${postInfo.content}"`);
+    } else {
+      log.info(`📝 Processing scheduled post for: ${account.account_name} [single content]`);
+    }
     
     try {
       // Twitter クライアント作成
       const client = createTwitterClient(botConfig);
       
       // ツイート投稿
-      const result = await postTweet(client, scheduledContent, account.account_name);
+      const result = await postTweet(client, postInfo.content, account.account_name);
       
       if (result.success) {
         successCount++;
         log.info(`✅ Scheduled tweet posted for ${account.account_name}`);
+        
+        // 投稿成功時のみインデックスを更新
+        if (postInfo.isFromList) {
+          const updated = updatePostIndex(configData, botIndex);
+          if (updated) {
+            configUpdated = true;
+          }
+        }
       } else {
         errorCount++;
         log.error(`❌ Scheduled tweet failed for ${account.account_name}: ${result.error}`);
+        
+        // 重複投稿エラー（403）の場合はインデックスを進める
+        if (result.error && result.error.includes('403')) {
+          log.warn(`⚠️ Duplicate content detected for ${account.account_name}, advancing index`);
+          if (postInfo.isFromList) {
+            const updated = updatePostIndex(configData, botIndex);
+            if (updated) {
+              configUpdated = true;
+            }
+          }
+        }
       }
       
     } catch (error) {
@@ -202,6 +321,11 @@ async function processScheduledPosts(configData) {
     
     // レート制限を避けるため少し待機
     await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  // 設定ファイルが更新された場合は保存
+  if (configUpdated) {
+    saveConfig(configData);
   }
   
   return { successCount, errorCount };
@@ -241,6 +365,19 @@ async function main() {
     }
 
     log.info(`📋 Processing ${configData.bots.length} configured bots...`);
+    
+    // 各Botの投稿情報をログ出力（デバッグ用）
+    configData.bots.forEach((botConfig, index) => {
+      const account = botConfig.account;
+      if (account.status === 'active') {
+        const postInfo = getPostContent(botConfig);
+        if (postInfo && postInfo.isFromList) {
+          log.debug(`Bot ${index + 1}: ${account.account_name} - List: ${postInfo.listLength} items, Current: ${postInfo.currentIndex + 1}`);
+        } else if (postInfo) {
+          log.debug(`Bot ${index + 1}: ${account.account_name} - Single content mode`);
+        }
+      }
+    });
     
     // スケジュール投稿を処理
     const scheduledResults = await processScheduledPosts(configData);

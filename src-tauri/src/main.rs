@@ -75,12 +75,14 @@ struct UserSettings {
     updated_at: String,
 }
 
-// スケジュール投稿
+// スケジュール投稿（投稿内容リスト対応版）
 #[derive(Debug, Serialize, Deserialize)]
 struct ScheduledTweet {
     id: Option<i64>,
     account_id: i64,
-    content: String,
+    content: String, // 後方互換のため残す
+    content_list: Option<String>, // JSON配列 ["投稿1", "投稿2", "投稿3"]
+    current_index: Option<i32>, // 現在の投稿インデックス
     scheduled_times: String, // カンマ区切りの時間リスト "09:00,12:00,18:00"
     is_active: bool,
     created_at: String,
@@ -184,12 +186,14 @@ fn init_database() -> Result<Connection> {
             [],
         )?;
         
-        // スケジュール投稿テーブル
+        // スケジュール投稿テーブル（投稿リスト対応版）
         conn.execute(
             "CREATE TABLE IF NOT EXISTS scheduled_tweets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
                 content TEXT NOT NULL,
+                content_list TEXT,
+                current_index INTEGER DEFAULT 0,
                 scheduled_times TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -253,6 +257,8 @@ fn run_database_migrations(conn: &Connection) -> Result<()> {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
                 content TEXT NOT NULL,
+                content_list TEXT,
+                current_index INTEGER DEFAULT 0,
                 scheduled_times TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -261,11 +267,38 @@ fn run_database_migrations(conn: &Connection) -> Result<()> {
             )",
             [],
         )?;
-        println!("Created scheduled_tweets table");
+        println!("Created scheduled_tweets table with content_list support");
     } else {
-        // テーブルが存在する場合はカラムをチェック・追加
+        // 投稿リスト対応のカラムを追加
+        let content_list_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='content_list'",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
         
-        // scheduled_times カラムが存在するかチェック
+        if content_list_exists == 0 {
+            conn.execute(
+                "ALTER TABLE scheduled_tweets ADD COLUMN content_list TEXT",
+                [],
+            )?;
+            println!("Added content_list column to scheduled_tweets table");
+        }
+        
+        let current_index_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='current_index'",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        
+        if current_index_exists == 0 {
+            conn.execute(
+                "ALTER TABLE scheduled_tweets ADD COLUMN current_index INTEGER DEFAULT 0",
+                [],
+            )?;
+            println!("Added current_index column to scheduled_tweets table");
+        }
+        
+        // 他のマイグレーション処理
         let scheduled_times_exists: i32 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='scheduled_times'",
             [],
@@ -273,30 +306,13 @@ fn run_database_migrations(conn: &Connection) -> Result<()> {
         ).unwrap_or(0);
         
         if scheduled_times_exists == 0 {
-            // scheduled_times カラムが存在しない場合は追加
             conn.execute(
                 "ALTER TABLE scheduled_tweets ADD COLUMN scheduled_times TEXT DEFAULT ''",
                 [],
             )?;
             println!("Added scheduled_times column to scheduled_tweets table");
-            
-            // 古い scheduled_time カラムからデータを移行（存在する場合）
-            let old_column_exists: i32 = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='scheduled_time'",
-                [],
-                |row| row.get(0)
-            ).unwrap_or(0);
-            
-            if old_column_exists > 0 {
-                conn.execute(
-                    "UPDATE scheduled_tweets SET scheduled_times = scheduled_time WHERE scheduled_times = ''",
-                    [],
-                )?;
-                println!("Migrated data from scheduled_time to scheduled_times");
-            }
         }
         
-        // is_active カラムが存在するかチェック
         let is_active_exists: i32 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='is_active'",
             [],
@@ -310,69 +326,12 @@ fn run_database_migrations(conn: &Connection) -> Result<()> {
             )?;
             println!("Added is_active column to scheduled_tweets table");
         }
-        
-        // status カラムが存在する場合は削除（古い設計）
-        let status_exists: i32 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('scheduled_tweets') WHERE name='status'",
-            [],
-            |row| row.get(0)
-        ).unwrap_or(0);
-        
-        if status_exists > 0 {
-            // SQLiteでは直接カラムを削除できないので、テーブルを再作成
-            recreate_scheduled_tweets_table(conn)?;
-        }
     }
     
     Ok(())
 }
 
-// scheduled_tweets テーブルを正しい構造で再作成
-fn recreate_scheduled_tweets_table(conn: &Connection) -> Result<()> {
-    // 既存データをバックアップ
-    conn.execute(
-        "CREATE TEMPORARY TABLE scheduled_tweets_backup AS 
-         SELECT id, account_id, content, 
-                COALESCE(scheduled_times, scheduled_time, '') as scheduled_times,
-                COALESCE(is_active, 1) as is_active,
-                created_at, updated_at
-         FROM scheduled_tweets",
-        [],
-    )?;
-    
-    // 古いテーブルを削除
-    conn.execute("DROP TABLE scheduled_tweets", [])?;
-    
-    // 新しいテーブルを作成
-    conn.execute(
-        "CREATE TABLE scheduled_tweets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            scheduled_times TEXT NOT NULL,
-            is_active BOOLEAN DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (account_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
-        )",
-        [],
-    )?;
-    
-    // データを復元
-    conn.execute(
-        "INSERT INTO scheduled_tweets (id, account_id, content, scheduled_times, is_active, created_at, updated_at)
-         SELECT id, account_id, content, scheduled_times, is_active, created_at, updated_at
-         FROM scheduled_tweets_backup",
-        [],
-    )?;
-    
-    // バックアップテーブルを削除
-    conn.execute("DROP TABLE scheduled_tweets_backup", [])?;
-    
-    println!("Recreated scheduled_tweets table with correct structure");
-    Ok(())
-}
-
+// 以下、既存の関数群（変更なし）...
 // ダッシュボード統計取得
 #[tauri::command]
 fn get_dashboard_stats(state: State<AppState>) -> Result<DashboardStats, String> {
@@ -589,7 +548,38 @@ fn update_bot_config(config: BotConfig, state: State<AppState>) -> Result<(), St
     Ok(())
 }
 
-// スケジュール投稿の保存（Bot設定と一緒に呼ばれる）
+// スケジュール投稿の保存（投稿リスト対応版）
+#[tauri::command]
+fn save_scheduled_tweet_list(account_id: i64, scheduled_times: String, content_list: Vec<String>, state: State<AppState>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let now = Utc::now().to_rfc3339();
+    
+    // 既存のスケジュール投稿を無効化
+    conn.execute(
+        "UPDATE scheduled_tweets SET is_active = 0, updated_at = ? WHERE account_id = ?",
+        params![now, account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    
+    // 新しいスケジュール投稿を作成
+    if !scheduled_times.is_empty() && !content_list.is_empty() {
+        let content_list_json = serde_json::to_string(&content_list)
+            .map_err(|e| format!("JSON変換エラー: {}", e))?;
+        
+        let first_content = content_list.first().unwrap_or(&String::new()).clone();
+        
+        conn.execute(
+            "INSERT INTO scheduled_tweets (account_id, content, content_list, current_index, scheduled_times, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, 0, ?, 1, ?, ?)",
+            params![account_id, first_content, content_list_json, scheduled_times, now, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+// 従来の save_scheduled_tweet も維持（後方互換）
 #[tauri::command]
 fn save_scheduled_tweet(account_id: i64, scheduled_times: String, content: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
@@ -615,6 +605,44 @@ fn save_scheduled_tweet(account_id: i64, scheduled_times: String, content: Strin
     Ok(())
 }
 
+// インデックス更新機能（投稿成功後に呼ばれる）
+#[tauri::command]
+fn update_post_index(account_id: i64, state: State<AppState>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let now = Utc::now().to_rfc3339();
+    
+    // 現在のインデックスと投稿リストを取得
+    let (current_index, content_list_json): (i32, Option<String>) = conn.query_row(
+        "SELECT current_index, content_list FROM scheduled_tweets WHERE account_id = ? AND is_active = 1",
+        params![account_id],
+        |row| Ok((row.get(0)?, row.get(1)?))
+    ).map_err(|e| format!("インデックス取得エラー: {}", e))?;
+    
+    if let Some(content_list_str) = content_list_json {
+        // JSON配列をパース
+        let content_list: Vec<String> = serde_json::from_str(&content_list_str)
+            .map_err(|e| format!("JSON解析エラー: {}", e))?;
+        
+        // 次のインデックスを計算（末尾に達したら0にリセット）
+        let next_index = if current_index + 1 >= content_list.len() as i32 {
+            0
+        } else {
+            current_index + 1
+        };
+        
+        // インデックスを更新
+        conn.execute(
+            "UPDATE scheduled_tweets SET current_index = ?, updated_at = ? WHERE account_id = ? AND is_active = 1",
+            params![next_index, now, account_id],
+        )
+        .map_err(|e| format!("インデックス更新エラー: {}", e))?;
+        
+        println!("Updated post index for account {}: {} -> {}", account_id, current_index, next_index);
+    }
+    
+    Ok(())
+}
+
 // スケジュール投稿管理
 #[tauri::command]
 fn add_scheduled_tweet(tweet: ScheduledTweet, state: State<AppState>) -> Result<i64, String> {
@@ -622,11 +650,13 @@ fn add_scheduled_tweet(tweet: ScheduledTweet, state: State<AppState>) -> Result<
     let now = Utc::now().to_rfc3339();
     
     conn.execute(
-        "INSERT INTO scheduled_tweets (account_id, content, scheduled_times, is_active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO scheduled_tweets (account_id, content, content_list, current_index, scheduled_times, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             tweet.account_id,
             tweet.content,
+            tweet.content_list,
+            tweet.current_index.unwrap_or(0),
             tweet.scheduled_times,
             tweet.is_active,
             now,
@@ -645,7 +675,8 @@ fn get_scheduled_tweets(account_id: Option<i64>, state: State<AppState>) -> Resu
     let tweets = match account_id {
         Some(id) => {
             let mut stmt = conn.prepare(
-                "SELECT * FROM scheduled_tweets WHERE account_id = ? AND is_active = 1 ORDER BY created_at DESC"
+                "SELECT id, account_id, content, content_list, current_index, scheduled_times, is_active, created_at, updated_at 
+                 FROM scheduled_tweets WHERE account_id = ? AND is_active = 1 ORDER BY created_at DESC"
             ).map_err(|e| e.to_string())?;
             
             let rows = stmt.query_map(params![id], |row| {
@@ -653,10 +684,12 @@ fn get_scheduled_tweets(account_id: Option<i64>, state: State<AppState>) -> Resu
                     id: row.get(0)?,
                     account_id: row.get(1)?,
                     content: row.get(2)?,
-                    scheduled_times: row.get(3)?,
-                    is_active: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    content_list: row.get(3)?,
+                    current_index: row.get(4)?,
+                    scheduled_times: row.get(5)?,
+                    is_active: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -666,7 +699,8 @@ fn get_scheduled_tweets(account_id: Option<i64>, state: State<AppState>) -> Resu
         }
         None => {
             let mut stmt = conn.prepare(
-                "SELECT * FROM scheduled_tweets WHERE is_active = 1 ORDER BY created_at DESC"
+                "SELECT id, account_id, content, content_list, current_index, scheduled_times, is_active, created_at, updated_at 
+                 FROM scheduled_tweets WHERE is_active = 1 ORDER BY created_at DESC"
             ).map_err(|e| e.to_string())?;
             
             let rows = stmt.query_map([], |row| {
@@ -674,10 +708,12 @@ fn get_scheduled_tweets(account_id: Option<i64>, state: State<AppState>) -> Resu
                     id: row.get(0)?,
                     account_id: row.get(1)?,
                     content: row.get(2)?,
-                    scheduled_times: row.get(3)?,
-                    is_active: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    content_list: row.get(3)?,
+                    current_index: row.get(4)?,
+                    scheduled_times: row.get(5)?,
+                    is_active: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -851,7 +887,7 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     
     // スケジュール投稿を取得
-    let mut scheduled_stmt = conn.prepare("SELECT * FROM scheduled_tweets WHERE is_active = 1 ORDER BY created_at DESC")
+    let mut scheduled_stmt = conn.prepare("SELECT id, account_id, content, content_list, current_index, scheduled_times, is_active, created_at, updated_at FROM scheduled_tweets WHERE is_active = 1 ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
     
     let scheduled_rows = scheduled_stmt.query_map([], |row| {
@@ -859,10 +895,12 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
             id: row.get(0)?,
             account_id: row.get(1)?,
             content: row.get(2)?,
-            scheduled_times: row.get(3)?,
-            is_active: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            content_list: row.get(3)?,
+            current_index: row.get(4)?,
+            scheduled_times: row.get(5)?,
+            is_active: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     })
     .map_err(|e| e.to_string())?;
@@ -924,7 +962,7 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-// GitHub Actions用の設定ファイル出力（プロジェクトルートのdataディレクトリに保存）
+// GitHub Actions用の設定ファイル出力（投稿リスト対応版）
 #[tauri::command]
 fn export_github_config(path: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
@@ -944,9 +982,9 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
         }
     }
     
-    // アクティブなBot一覧を取得
+    // アクティブなBot一覧を取得（投稿リスト対応）
     let mut stmt = conn.prepare(
-        "SELECT ba.*, st.content, st.scheduled_times 
+        "SELECT ba.*, st.content, st.content_list, st.current_index, st.scheduled_times 
          FROM bot_accounts ba 
          LEFT JOIN scheduled_tweets st ON ba.id = st.account_id AND st.is_active = 1
          WHERE ba.status = 'active'
@@ -968,13 +1006,29 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
         };
         
         let scheduled_content: Option<String> = row.get(10).ok();
-        let scheduled_times: Option<String> = row.get(11).ok();
+        let content_list_json: Option<String> = row.get(11).ok();
+        let current_index: Option<i32> = row.get(12).ok();
+        let scheduled_times: Option<String> = row.get(13).ok();
         
-        Ok(serde_json::json!({
-            "account": account,
-            "scheduled_content": scheduled_content,
-            "scheduled_times": scheduled_times
-        }))
+        // 投稿リストがある場合は配列として出力、ない場合は従来形式
+        let bot_data = if let Some(content_list_str) = content_list_json {
+            // 投稿リスト形式
+            serde_json::json!({
+                "account": account,
+                "scheduled_content_list": content_list_str, // JSON文字列
+                "current_index": current_index.unwrap_or(0),
+                "scheduled_times": scheduled_times
+            })
+        } else {
+            // 従来形式（後方互換）
+            serde_json::json!({
+                "account": account,
+                "scheduled_content": scheduled_content,
+                "scheduled_times": scheduled_times
+            })
+        };
+        
+        Ok(bot_data)
     })
     .map_err(|e| e.to_string())?;
     
@@ -1262,7 +1316,9 @@ fn main() {
             test_tweet,
             add_scheduled_tweet,
             get_scheduled_tweets,
-            save_scheduled_tweet
+            save_scheduled_tweet,
+            save_scheduled_tweet_list,
+            update_post_index
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
