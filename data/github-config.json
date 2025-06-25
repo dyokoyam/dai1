@@ -1,23 +1,5 @@
 {
-  "bots": [
-    {
-      "account": {
-        "access_token": "1857289689339985920-km3Wo0L50odTQjapoqVRO5MJC6Equr",
-        "access_token_secret": "KMfeQIuotHaZFZ3MIiAfOhtNPkmGJmbdAZ1HWciWfY3Hd",
-        "account_name": "z5rm3",
-        "api_key": "Eal6Crzwpu5FL84MkI17tL91G",
-        "api_key_secret": "WqjXiDULtn3dUzdkNezh3eM8kgFEQN4O1xTQzv9MgnWXKrRjLt",
-        "api_type": "Free",
-        "created_at": "2025-06-13T02:39:36.539669300+00:00",
-        "id": 2,
-        "status": "active",
-        "updated_at": "2025-06-24T10:27:56.256105300+00:00"
-      },
-      "current_index": 0,
-      "scheduled_content_list": "[\"おやすみ\",\"こんにちわ\",\"俺がすべてを終わらせる\"]",
-      "scheduled_times": "02:00,03:00,04:00"
-    }
-  ],
-  "updated_at": "2025-06-24T17:06:22.323746200+00:00",
+  "bots": [],
+  "updated_at": "2025-06-25T12:36:50.480684500+00:00",
   "version": "1.0"
 }

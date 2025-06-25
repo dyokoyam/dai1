@@ -5,12 +5,19 @@ on:
     - cron: '0 * * * *'  # 毎時0分に実行（1時間ごと）
   workflow_dispatch:  # 手動実行用
 
+# GitHub Actionsにリポジトリへの書き込み権限を付与
+permissions:
+  contents: write
+
 jobs:
   post_tweets:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # トークンを明示的に指定（自動コミット用）
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -42,11 +49,38 @@ jobs:
           LOG_LEVEL: info
           NODE_ENV: production
 
+      - name: Configure Git for auto-commit
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Check for config file changes
+        id: git-check
+        run: |
+          git diff --exit-code data/github-config.json || echo "changes=true" >> $GITHUB_OUTPUT
+
+      - name: Commit updated config file
+        if: steps.git-check.outputs.changes == 'true'
+        run: |
+          git add data/github-config.json
+          git commit -m "🤖 Auto-update: advance post indices after successful posting
+
+          - Updated content rotation indices
+          - Prevents duplicate posting issues
+          - Automated by GitHub Actions"
+          
+      - name: Push changes
+        if: steps.git-check.outputs.changes == 'true'
+        run: |
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload logs as artifact (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: error-logs
+          name: error-logs-${{ github.run_number }}
           path: |
             scripts/*.log
             data/github-config.json
