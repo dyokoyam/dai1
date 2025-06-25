@@ -11,6 +11,7 @@ function BotManagement({ onUpdate, userSettings }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [isTweetModalOpen, setIsTweetModalOpen] = useState(false);
+  const [isReplyModalOpen, setIsReplyModalOpen] = useState(false);
   const [currentBot, setCurrentBot] = useState({
     account_name: '',
     api_type: 'Free',
@@ -32,6 +33,8 @@ function BotManagement({ onUpdate, userSettings }) {
   const [testingBotId, setTestingBotId] = useState(null);
   const [selectedBotForTweet, setSelectedBotForTweet] = useState(null);
   const [tweetContent, setTweetContent] = useState('');
+  const [selectedBotForReply, setSelectedBotForReply] = useState(null);
+  const [replyContent, setReplyContent] = useState('');
   const [selectedBotForConfig, setSelectedBotForConfig] = useState(null);
   const [scheduledTimes, setScheduledTimes] = useState([]);
   
@@ -85,8 +88,10 @@ function BotManagement({ onUpdate, userSettings }) {
   };
 
   const handleReply = (bot) => {
-    console.log('返信機能は未実装です', bot);
-    alert('返信機能は今後実装予定です。');
+    console.log('Opening reply modal for bot:', bot);
+    setSelectedBotForReply(bot);
+    setReplyContent('');
+    setIsReplyModalOpen(true);
   };
 
   const openConfigModal = async (bot) => {
@@ -166,8 +171,11 @@ function BotManagement({ onUpdate, userSettings }) {
     setIsModalOpen(false);
     setIsConfigModalOpen(false);
     setIsTweetModalOpen(false);
+    setIsReplyModalOpen(false);
     setTweetContent('');
+    setReplyContent('');
     setSelectedBotForTweet(null);
+    setSelectedBotForReply(null);
     setSelectedBotForConfig(null);
     setScheduledTimes([]);
     setPostContentList(['']);
@@ -405,6 +413,52 @@ function BotManagement({ onUpdate, userSettings }) {
     }
   };
 
+  const handleReplySubmit = async (e) => {
+    e.preventDefault();
+    
+    if (!selectedBotForReply) {
+      alert('返信するアカウントを選択してください。');
+      return;
+    }
+    
+    if (!replyContent.trim()) {
+      alert('返信内容を入力してください。');
+      return;
+    }
+    
+    if (replyContent.length > 280) {
+      alert('返信内容が280文字を超えています。');
+      return;
+    }
+    
+    setTestingBotId(selectedBotForReply.id);
+    
+    try {
+      console.log('Sending reply...');
+      const result = await invoke('test_tweet', {
+        request: {
+          account_id: selectedBotForReply.id,
+          content: replyContent
+        }
+      });
+      
+      console.log('Reply result:', result);
+      
+      if (result.success) {
+        alert(`✅ 返信が成功しました！\n\nツイートID: ${result.tweet_id}\n\n「Bot実行ログ」ページで詳細を確認できます。`);
+        if (onUpdate) onUpdate(); // 統計情報を更新
+        closeModal();
+      } else {
+        alert(`❌ 返信に失敗しました。\n\nエラー: ${result.message}\n\n「Bot実行ログ」ページでエラー詳細を確認してください。`);
+      }
+    } catch (error) {
+      console.error('Failed to send reply:', error);
+      alert(`❌ 返信中にエラーが発生しました。\n\nエラー詳細: ${error}\n\nAPI Keyの設定を確認してください。`);
+    } finally {
+      setTestingBotId(null);
+    }
+  };
+
   const getApiTypeBadge = (apiType) => {
     const badges = {
       'Free': { text: '新API(無料)', class: 'api-free' },
@@ -422,7 +476,8 @@ function BotManagement({ onUpdate, userSettings }) {
     userSettingsMaxAccounts: userSettings?.max_accounts,
     isModalOpen,
     isConfigModalOpen,
-    isTweetModalOpen
+    isTweetModalOpen,
+    isReplyModalOpen
   });
 
   if (error) {
@@ -893,6 +948,79 @@ function BotManagement({ onUpdate, userSettings }) {
                   disabled={testingBotId === selectedBotForTweet?.id || tweetContent.length > 280}
                 >
                   {testingBotId === selectedBotForTweet?.id ? '投稿中...' : '投稿'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 返信モーダル */}
+      {isReplyModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2 className="modal-title">
+                返信作成
+              </h2>
+            </div>
+            
+            <form onSubmit={handleReplySubmit}>
+              <div className="form-group">
+                <label className="form-label">
+                  <FaRobot /> 返信するアカウント
+                </label>
+                <select
+                  className="form-select"
+                  value={selectedBotForReply?.id || ''}
+                  onChange={(e) => {
+                    const selectedBot = botAccounts.find(bot => bot.id === parseInt(e.target.value));
+                    setSelectedBotForReply(selectedBot);
+                  }}
+                  required
+                >
+                  <option value="">アカウントを選択してください</option>
+                  {botAccounts.map((bot) => (
+                    <option key={bot.id} value={bot.id}>
+                      {bot.account_name} - {bot.status === 'active' ? '稼働中' : '停止中'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">
+                  <FaReply /> 返信内容
+                </label>
+                <textarea
+                  className="form-textarea"
+                  value={replyContent}
+                  onChange={(e) => setReplyContent(e.target.value)}
+                  placeholder="返信したい内容を入力してください..."
+                  rows={4}
+                  maxLength={280}
+                  required
+                />
+                <div style={{ 
+                  textAlign: 'right', 
+                  fontSize: '12px', 
+                  color: replyContent.length > 280 ? '#EF4444' : '#6B7280',
+                  marginTop: '4px'
+                }}>
+                  {replyContent.length}/280文字
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>
+                  キャンセル
+                </button>
+                <button 
+                  type="submit" 
+                  className="btn btn-primary"
+                  disabled={testingBotId === selectedBotForReply?.id || replyContent.length > 280 || !selectedBotForReply}
+                >
+                  {testingBotId === selectedBotForReply?.id ? '返信中...' : '返信'}
                 </button>
               </div>
             </form>
