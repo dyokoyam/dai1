@@ -5,7 +5,7 @@ on:
     - cron: '0 * * * *'  # 毎時0分に実行（1時間ごと）
   workflow_dispatch:  # 手動実行用
 
-# GitHub Actionsにリポジトリへの書き込み権限を付与
+# GitHub Actions に書き込み権限を付与
 permissions:
   contents: write
 
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # トークンを明示的に指定（自動コミット用）
+          # 自動コミット用にトークンを設定
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Node.js
@@ -49,32 +49,46 @@ jobs:
           LOG_LEVEL: info
           NODE_ENV: production
 
-      - name: Configure Git for auto-commit
-        run: |
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-
+      # 🔄 新機能: 設定ファイルの自動コミット
       - name: Check for config file changes
-        id: git-check
+        id: check_changes
         run: |
-          git diff --exit-code data/github-config.json || echo "changes=true" >> $GITHUB_OUTPUT
+          if git diff --quiet data/github-config.json; then
+            echo "No changes to config file"
+            echo "changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Config file has been updated"
+            echo "changes=true" >> $GITHUB_OUTPUT
+            
+            # 変更内容をログ出力
+            echo "Changes detected:"
+            git diff data/github-config.json
+          fi
 
-      - name: Commit updated config file
-        if: steps.git-check.outputs.changes == 'true'
+      - name: Commit updated configuration
+        if: steps.check_changes.outputs.changes == 'true'
         run: |
-          git add data/github-config.json
-          git commit -m "🤖 Auto-update: advance post indices after successful posting
-
-          - Updated content rotation indices
-          - Prevents duplicate posting issues
-          - Automated by GitHub Actions"
+          # Git設定
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Bot"
           
-      - name: Push changes
-        if: steps.git-check.outputs.changes == 'true'
+          # ステージング
+          git add data/github-config.json
+          
+          # コミットメッセージに更新内容を含める
+          COMMIT_MSG="🤖 Auto-update: advance post indices for scheduled tweets"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          git commit -m "$COMMIT_MSG" -m "Updated at: $TIMESTAMP" -m "Updated by: GitHub Actions workflow"
+          
+          echo "✅ Configuration changes committed successfully"
+
+      - name: Push changes to repository
+        if: steps.check_changes.outputs.changes == 'true'
         run: |
+          # 変更をプッシュ
           git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "✅ Configuration changes pushed to repository"
 
       - name: Upload logs as artifact (on failure)
         if: failure()
@@ -85,3 +99,19 @@ jobs:
             scripts/*.log
             data/github-config.json
           retention-days: 7
+
+      # 🔍 実行結果サマリー
+      - name: Execution Summary
+        if: always()
+        run: |
+          echo "📊 GitHub Actions Execution Summary"
+          echo "======================================="
+          echo "⏰ Execution Time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "🔄 Config Updated: ${{ steps.check_changes.outputs.changes }}"
+          
+          if [ -f "data/github-config.json" ]; then
+            echo "📄 Current Config Status:"
+            jq '.bots[] | {account: .account.account_name, current_index: .current_index, content_count: (.scheduled_content_list | fromjson | length)}' data/github-config.json 2>/dev/null || echo "Config file exists but format issue"
+          fi
+          
+          echo "======================================="
