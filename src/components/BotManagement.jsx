@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { FaPlus, FaEdit, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaRobot, FaPaperPlane, FaClock, FaFileAlt, FaTimes, FaArrowUp, FaArrowDown, FaList } from 'react-icons/fa';
+import { FaPlus, FaReply, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaRobot, FaPaperPlane, FaClock, FaFileAlt, FaTimes, FaArrowUp, FaArrowDown, FaList } from 'react-icons/fa';
 import './BotManagement.css';
 
 function BotManagement({ onUpdate, userSettings }) {
@@ -27,7 +27,6 @@ function BotManagement({ onUpdate, userSettings }) {
     tweet_templates: '',
     hashtags: ''
   });
-  const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [testingBotId, setTestingBotId] = useState(null);
@@ -82,15 +81,12 @@ function BotManagement({ onUpdate, userSettings }) {
       access_token_secret: '',
       status: 'inactive'
     });
-    setIsEditing(false);
     setIsModalOpen(true);
   };
 
-  const openEditModal = (bot) => {
-    console.log('Opening edit modal for bot:', bot);
-    setCurrentBot(bot);
-    setIsEditing(true);
-    setIsModalOpen(true);
+  const handleReply = (bot) => {
+    console.log('返信機能は未実装です', bot);
+    alert('返信機能は今後実装予定です。');
   };
 
   const openConfigModal = async (bot) => {
@@ -247,7 +243,7 @@ function BotManagement({ onUpdate, userSettings }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log('Submitting bot form:', { isEditing, currentBot });
+    console.log('Submitting bot form:', { currentBot });
     
     // バリデーション
     if (!currentBot.account_name.trim()) {
@@ -272,17 +268,11 @@ function BotManagement({ onUpdate, userSettings }) {
     }
     
     try {
-      if (isEditing) {
-        console.log('Updating bot account...');
-        await invoke('update_bot_account', { account: currentBot });
-        alert('Botアカウントを更新しました！');
-      } else {
-        console.log('Adding new bot account...');
-        console.log('Bot data being sent:', currentBot);
-        const result = await invoke('add_bot_account', { account: currentBot });
-        console.log('Add bot result:', result);
-        alert('Botアカウントを追加しました！');
-      }
+      console.log('Adding new bot account...');
+      console.log('Bot data being sent:', currentBot);
+      const result = await invoke('add_bot_account', { account: currentBot });
+      console.log('Add bot result:', result);
+      alert('Botアカウントを追加しました！');
       
       console.log('Bot account saved successfully');
       fetchBotAccounts();
@@ -581,10 +571,10 @@ function BotManagement({ onUpdate, userSettings }) {
                     
                     <button
                       className="btn btn-secondary"
-                      onClick={() => openEditModal(bot)}
-                      title="編集"
+                      onClick={() => handleReply(bot)}
+                      title="返信"
                     >
-                      <FaEdit />
+                      <FaReply />
                     </button>
                     
                     <button
@@ -602,14 +592,12 @@ function BotManagement({ onUpdate, userSettings }) {
         )}
       </div>
 
-      {/* Bot追加/編集モーダル */}
+      {/* Bot追加モーダル */}
       {isModalOpen && (
         <div className="modal-overlay">
           <div className="modal">
             <div className="modal-header">
-              <h2 className="modal-title">
-                {isEditing ? 'Bot編集' : 'Bot追加'}
-              </h2>
+              <h2 className="modal-title">Bot追加</h2>
             </div>
             
             <form onSubmit={handleSubmit}>
@@ -705,7 +693,7 @@ function BotManagement({ onUpdate, userSettings }) {
                   キャンセル
                 </button>
                 <button type="submit" className="btn btn-primary">
-                  {isEditing ? '更新' : '追加'}
+                  追加
                 </button>
               </div>
             </form>
