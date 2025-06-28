@@ -2,7 +2,7 @@
 
 /**
  * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
- * スケジュール投稿専用版（時間範囲判定対応・投稿内容リスト対応）
+ * スケジュール投稿専用版（時間範囲判定対応・投稿内容リスト対応・返信機能新仕様対応）
  */
 
 import { TwitterApi } from 'twitter-api-v2';
@@ -79,7 +79,7 @@ function loadConfig() {
     }
     
     const configData = JSON.parse(readFileSync(config.configPath, 'utf8'));
-    log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found`);
+    log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found, ${configData.reply_settings?.length || 0} reply settings found`);
     return configData;
   } catch (error) {
     log.error(`Failed to load configuration: ${error.message}`);
@@ -207,10 +207,8 @@ function updatePostIndexWithMemory(configData, botIndex, memoryIndices, accountN
 /**
  * Twitter クライアントを作成
  */
-function createTwitterClient(botConfig) {
+function createTwitterClient(account) {
   try {
-    const account = botConfig.account;
-    
     if (!account.api_key || !account.api_key_secret || !account.access_token || !account.access_token_secret) {
       throw new Error('Missing Twitter API credentials');
     }
@@ -222,7 +220,7 @@ function createTwitterClient(botConfig) {
       accessSecret: account.access_token_secret,
     });
   } catch (error) {
-    log.error(`Failed to create Twitter client for ${botConfig.account?.account_name}: ${error.message}`);
+    log.error(`Failed to create Twitter client for ${account?.account_name}: ${error.message}`);
     throw error;
   }
 }
@@ -252,6 +250,339 @@ async function postTweet(client, content, botName) {
     log.error(`Failed to post tweet for ${botName}: ${error.message}`);
     return { success: false, error: error.message };
   }
+}
+
+/**
+ * ツイートへの返信を投稿
+ */
+async function postReply(client, content, tweetId, botName) {
+  try {
+    if (config.dryRun) {
+      log.info(`[DRY RUN] Would post reply for ${botName} to tweet ${tweetId}: "${content}"`);
+      return {
+        data: { id: 'dry_run_reply_' + Date.now(), text: content },
+        success: true
+      };
+    }
+
+    const response = await client.v2.tweet(content, {
+      reply: {
+        in_reply_to_tweet_id: tweetId
+      }
+    });
+    
+    if (response.data) {
+      log.info(`✅ Successfully posted reply for ${botName}: ${response.data.id}`);
+      return { ...response, success: true };
+    } else {
+      throw new Error('No data in response');
+    }
+  } catch (error) {
+    log.error(`❌ Failed to post reply for ${botName}: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * ユーザーの最新ツイートを取得
+ */
+async function getUserTweets(client, username, sinceId = null) {
+  try {
+    if (config.dryRun) {
+      log.info(`[DRY RUN] Would fetch tweets for ${username} since ${sinceId || 'beginning'}`);
+      return {
+        data: sinceId ? [] : [{
+          id: 'dry_run_tweet_' + Date.now(),
+          text: 'This is a dry run tweet',
+          created_at: new Date().toISOString()
+        }],
+        success: true
+      };
+    }
+
+    // ユーザー名からユーザーIDを取得
+    const userResponse = await client.v2.userByUsername(username);
+    if (!userResponse.data) {
+      throw new Error(`User ${username} not found`);
+    }
+
+    const userId = userResponse.data.id;
+
+    // ツイートを取得
+    const options = {
+      max_results: 10,
+      'tweet.fields': ['created_at', 'conversation_id']
+    };
+
+    if (sinceId) {
+      options.since_id = sinceId;
+    }
+
+    const tweetsResponse = await client.v2.userTimeline(userId, options);
+    
+    return {
+      data: tweetsResponse.data || [],
+      success: true
+    };
+  } catch (error) {
+    log.error(`Failed to fetch tweets for ${username}: ${error.message}`);
+    return { success: false, error: error.message, data: [] };
+  }
+}
+
+/**
+ * 新仕様：返信設定のlast_checked_tweet_idsを更新（複数の監視対象に対応）
+ */
+function updateLastCheckedTweetIds(configData, replySettingIndex, targetBotId, tweetId) {
+  try {
+    const replySetting = configData.reply_settings[replySettingIndex];
+    
+    // 現在のlast_checked_tweet_idsを取得
+    let lastCheckedTweetIds = {};
+    if (replySetting.last_checked_tweet_ids) {
+      try {
+        // 新形式（JSON配列）をパース
+        const idsArray = JSON.parse(replySetting.last_checked_tweet_ids);
+        if (Array.isArray(idsArray)) {
+          // 配列形式 ["1:tweet_id", "2:tweet_id"] から {1: "tweet_id", 2: "tweet_id"} に変換
+          idsArray.forEach(entry => {
+            const parts = entry.split(':');
+            if (parts.length === 2) {
+              lastCheckedTweetIds[parts[0]] = parts[1];
+            }
+          });
+        }
+      } catch (parseError) {
+        log.warn(`Failed to parse last_checked_tweet_ids, resetting: ${parseError.message}`);
+        lastCheckedTweetIds = {};
+      }
+    }
+    
+    // 該当するtarget_bot_idのツイートIDを更新
+    lastCheckedTweetIds[targetBotId.toString()] = tweetId;
+    
+    // JSON配列形式に戻す ["1:tweet_id", "2:tweet_id"]
+    const updatedIds = Object.entries(lastCheckedTweetIds).map(([botId, tweetId]) => `${botId}:${tweetId}`);
+    
+    configData.reply_settings[replySettingIndex].last_checked_tweet_ids = JSON.stringify(updatedIds);
+    configData.reply_settings[replySettingIndex].updated_at = new Date().toISOString();
+    
+    log.debug(`Updated last_checked_tweet_ids for reply setting ${replySettingIndex}, target bot ${targetBotId}: ${tweetId}`);
+    return true;
+  } catch (error) {
+    log.error(`Failed to update last_checked_tweet_ids: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * 新仕様：特定の監視対象のlast_checked_tweet_idを取得
+ */
+function getLastCheckedTweetId(replySetting, targetBotId) {
+  try {
+    if (!replySetting.last_checked_tweet_ids) {
+      return null;
+    }
+    
+    const idsArray = JSON.parse(replySetting.last_checked_tweet_ids);
+    if (!Array.isArray(idsArray)) {
+      return null;
+    }
+    
+    // 配列から該当するBot IDのツイートIDを検索
+    for (const entry of idsArray) {
+      const parts = entry.split(':');
+      if (parts.length === 2 && parts[0] === targetBotId.toString()) {
+        return parts[1];
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    log.warn(`Failed to get last_checked_tweet_id for bot ${targetBotId}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Bot名を取得（アカウントIDから）
+ */
+function getBotNameById(configData, botId) {
+  const bot = configData.bots.find(b => b.account.id === botId);
+  return bot ? bot.account.account_name : `Bot_${botId}`;
+}
+
+/**
+ * Botアカウント情報を取得（アカウントIDから）
+ */
+function getBotAccountById(configData, botId) {
+  const bot = configData.bots.find(b => b.account.id === botId);
+  return bot ? bot.account : null;
+}
+
+/**
+ * 新仕様：返信監視・実行を処理
+ */
+async function processReplies(configData) {
+  let successCount = 0;
+  let errorCount = 0;
+  let configUpdated = false;
+  
+  if (!configData.reply_settings || configData.reply_settings.length === 0) {
+    log.info('📄 No reply settings found, skipping reply processing');
+    return { successCount, errorCount };
+  }
+
+  log.info(`🔍 Processing ${configData.reply_settings.length} reply settings (NEW SPEC)...`);
+
+  for (let settingIndex = 0; settingIndex < configData.reply_settings.length; settingIndex++) {
+    const replySetting = configData.reply_settings[settingIndex];
+    
+    // アクティブでない設定はスキップ
+    if (!replySetting.is_active) {
+      log.debug(`Skipping inactive reply setting ${settingIndex + 1}`);
+      continue;
+    }
+
+    try {
+      // 新仕様：返信するBotの情報を取得（単一）
+      const replyBotAccount = getBotAccountById(configData, replySetting.reply_bot_id);
+      if (!replyBotAccount) {
+        log.warn(`Reply bot account not found for reply setting ${settingIndex + 1} (ID: ${replySetting.reply_bot_id})`);
+        continue;
+      }
+
+      // 返信するBotがアクティブでない場合はスキップ
+      if (replyBotAccount.status !== 'active') {
+        log.debug(`Skipping inactive reply bot: ${replyBotAccount.account_name}`);
+        continue;
+      }
+
+      // 新仕様：監視対象Botのリストを取得（複数）
+      let targetBotIds;
+      try {
+        targetBotIds = JSON.parse(replySetting.target_bot_ids);
+        if (!Array.isArray(targetBotIds) || targetBotIds.length === 0) {
+          log.warn(`Invalid or empty target_bot_ids for reply setting ${settingIndex + 1}`);
+          continue;
+        }
+      } catch (parseError) {
+        log.error(`Failed to parse target_bot_ids for reply setting ${settingIndex + 1}: ${parseError.message}`);
+        continue;
+      }
+      
+      log.info(`🔍 Reply bot ${replyBotAccount.account_name} monitoring ${targetBotIds.length} targets...`);
+
+      // 各監視対象Botをチェック
+      for (const targetBotId of targetBotIds) {
+        const targetBotAccount = getBotAccountById(configData, targetBotId);
+        if (!targetBotAccount) {
+          log.warn(`Target bot account not found: ${targetBotId}`);
+          continue;
+        }
+
+        // 監視対象Botがアクティブでない場合はスキップ
+        if (targetBotAccount.status !== 'active') {
+          log.debug(`Skipping inactive target bot: ${targetBotAccount.account_name}`);
+          continue;
+        }
+
+        log.debug(`👀 Checking ${targetBotAccount.account_name} for new tweets...`);
+
+        try {
+          // 監視対象アカウントのTwitterクライアントを作成
+          const targetClient = createTwitterClient(targetBotAccount);
+
+          // この監視対象の最後にチェックしたツイートIDを取得
+          const lastCheckedTweetId = getLastCheckedTweetId(replySetting, targetBotId);
+
+          // 最新ツイートを取得
+          const tweetsResult = await getUserTweets(
+            targetClient, 
+            targetBotAccount.account_name, 
+            lastCheckedTweetId
+          );
+
+          if (!tweetsResult.success) {
+            log.error(`Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
+            errorCount++;
+            continue;
+          }
+
+          const newTweets = tweetsResult.data;
+          
+          if (newTweets.length === 0) {
+            log.debug(`No new tweets found for ${targetBotAccount.account_name}`);
+            continue;
+          }
+
+          log.info(`📨 Found ${newTweets.length} new tweets from ${targetBotAccount.account_name}`);
+
+          // 最新のツイートIDを記録（時系列で最新のもの）
+          const latestTweetId = newTweets[0].id;
+          updateLastCheckedTweetIds(configData, settingIndex, targetBotId, latestTweetId);
+          configUpdated = true;
+
+          // 返信Botのクライアントを作成
+          const replyClient = createTwitterClient(replyBotAccount);
+
+          // 各新しいツイートに対して返信処理
+          for (const tweet of newTweets) {
+            log.info(`💬 Processing tweet ${tweet.id} from ${targetBotAccount.account_name}: "${tweet.text.substring(0, 50)}..."`);
+
+            try {
+              // 返信を投稿
+              const replyResult = await postReply(
+                replyClient,
+                replySetting.reply_content,
+                tweet.id,
+                replyBotAccount.account_name
+              );
+
+              if (replyResult.success) {
+                successCount++;
+                log.info(`✅ Reply posted by ${replyBotAccount.account_name} to ${targetBotAccount.account_name}'s tweet ${tweet.id}`);
+              } else {
+                errorCount++;
+                log.error(`❌ Reply failed from ${replyBotAccount.account_name}: ${replyResult.error}`);
+              }
+
+              // レート制限を避けるため少し待機
+              await new Promise(resolve => setTimeout(resolve, 2000));
+
+            } catch (error) {
+              errorCount++;
+              log.error(`💥 Error posting reply from ${replyBotAccount.account_name}: ${error.message}`);
+            }
+          }
+
+          // ツイート処理間の待機
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+        } catch (error) {
+          errorCount++;
+          log.error(`💥 Error processing target bot ${targetBotAccount.account_name}: ${error.message}`);
+        }
+      }
+
+    } catch (error) {
+      errorCount++;
+      log.error(`💥 Error processing reply setting ${settingIndex + 1}: ${error.message}`);
+    }
+
+    // 設定間の待機
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  // 設定ファイルが更新された場合は保存を試行
+  if (configUpdated) {
+    const saved = saveConfig(configData);
+    if (!saved) {
+      log.warn(`⚠️ Config file update failed for reply settings, but memory was updated`);
+    }
+  }
+
+  return { successCount, errorCount };
 }
 
 /**
@@ -306,7 +637,7 @@ async function processScheduledPosts(configData) {
     
     try {
       // Twitter クライアント作成
-      const client = createTwitterClient(botConfig);
+      const client = createTwitterClient(account);
       
       // ツイート投稿
       const result = await postTweet(client, postInfo.content, account.account_name);
@@ -378,7 +709,7 @@ function getJapanTime() {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager posting process...');
+    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
@@ -411,15 +742,39 @@ async function main() {
       }
     });
     
+    // 返信設定の詳細ログ出力（デバッグ用）
+    if (configData.reply_settings && configData.reply_settings.length > 0) {
+      log.info(`🔗 Reply settings overview:`);
+      configData.reply_settings.forEach((setting, index) => {
+        if (setting.is_active) {
+          try {
+            const targetBotIds = JSON.parse(setting.target_bot_ids);
+            const replyBotName = getBotNameById(configData, setting.reply_bot_id);
+            const targetBotNames = targetBotIds.map(id => getBotNameById(configData, id)).join(', ');
+            log.info(`  ${index + 1}. ${replyBotName} → monitors [${targetBotNames}]`);
+          } catch (e) {
+            log.warn(`  ${index + 1}. Invalid reply setting format`);
+          }
+        }
+      });
+    }
+    
     // スケジュール投稿を処理
     const scheduledResults = await processScheduledPosts(configData);
-    
     log.info(`📈 Scheduled posts: ${scheduledResults.successCount} success, ${scheduledResults.errorCount} errors`);
     
-    // 結果サマリー
-    log.info(`🏁 Posting process completed: ${scheduledResults.successCount} success, ${scheduledResults.errorCount} errors`);
+    // 返信処理を実行
+    const replyResults = await processReplies(configData);
+    log.info(`💬 Reply posts: ${replyResults.successCount} success, ${replyResults.errorCount} errors`);
     
-    if (scheduledResults.errorCount > 0) {
+    // 結果サマリー
+    const totalSuccess = scheduledResults.successCount + replyResults.successCount;
+    const totalErrors = scheduledResults.errorCount + replyResults.errorCount;
+    
+    log.info(`🏁 Processing completed: ${totalSuccess} total success, ${totalErrors} total errors`);
+    log.info(`📊 Breakdown: Scheduled(${scheduledResults.successCount}/${scheduledResults.errorCount}), Replies(${replyResults.successCount}/${replyResults.errorCount})`);
+    
+    if (totalErrors > 0) {
       process.exit(1);
     }
     

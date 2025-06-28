@@ -51,12 +51,25 @@ struct BotConfig {
     updated_at: String,
 }
 
+// 返信設定（新仕様）
+#[derive(Debug, Serialize, Deserialize)]
+struct ReplySettings {
+    id: Option<i64>,
+    target_bot_ids: String,        // 監視対象のBotアカウントIDの配列（JSON）
+    reply_bot_id: i64,             // 返信するBotアカウントID（単一）
+    reply_content: String,         // 返信内容
+    is_active: bool,               // 有効/無効
+    last_checked_tweet_ids: Option<String>, // 最後にチェックしたツイートIDのJSON配列
+    created_at: String,
+    updated_at: String,
+}
+
 // 実行ログ
 #[derive(Debug, Serialize, Deserialize)]
 struct ExecutionLog {
     id: Option<i64>,
     account_id: i64,
-    log_type: String, // "tweet", "error", "info"
+    log_type: String, // "tweet", "error", "info", "reply"
     message: String,
     tweet_id: Option<String>,
     tweet_content: Option<String>,
@@ -170,6 +183,22 @@ fn init_database() -> Result<Connection> {
             [],
         )?;
         
+        // 返信設定テーブル（新仕様）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS reply_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_bot_ids TEXT NOT NULL,
+                reply_bot_id INTEGER NOT NULL,
+                reply_content TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                last_checked_tweet_ids TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (reply_bot_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        
         // 実行ログテーブル
         conn.execute(
             "CREATE TABLE IF NOT EXISTS execution_logs (
@@ -243,6 +272,35 @@ fn init_database() -> Result<Connection> {
 
 // データベースマイグレーション
 fn run_database_migrations(conn: &Connection) -> Result<()> {
+    // 返信設定テーブルの存在チェック
+    let reply_table_exists: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reply_settings'",
+        [],
+        |row| row.get(0)
+    ).unwrap_or(0);
+    
+    if reply_table_exists == 0 {
+        // 返信設定テーブルを新規作成（新仕様）
+        conn.execute(
+            "CREATE TABLE reply_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_bot_ids TEXT NOT NULL,
+                reply_bot_id INTEGER NOT NULL,
+                reply_content TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                last_checked_tweet_ids TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (reply_bot_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        println!("Created reply_settings table with new schema (multiple targets, single replier)");
+    } else {
+        // 既存テーブルを新仕様にマイグレーション
+        migrate_reply_settings_table(conn)?;
+    }
+    
     // scheduled_tweets テーブルが存在するかチェック
     let table_exists: i32 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='scheduled_tweets'",
@@ -331,7 +389,225 @@ fn run_database_migrations(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// 以下、既存の関数群（変更なし）...
+// 返信設定テーブルマイグレーション
+fn migrate_reply_settings_table(conn: &Connection) -> Result<()> {
+    // 既存の構造を確認
+    let target_bot_ids_exists: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('reply_settings') WHERE name='target_bot_ids'",
+        [],
+        |row| row.get(0)
+    ).unwrap_or(0);
+    
+    if target_bot_ids_exists == 0 {
+        // 旧構造から新構造へマイグレーション
+        println!("Migrating reply_settings table to new schema...");
+        
+        // 既存データをバックアップ
+        let mut existing_settings = Vec::new();
+        {
+            let mut stmt = conn.prepare("SELECT * FROM reply_settings WHERE is_active = 1")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(1)?,      // target_bot_id
+                    row.get::<_, String>(2)?,   // reply_bot_ids
+                    row.get::<_, String>(3)?,   // reply_content
+                    row.get::<_, String>(6)?,   // created_at
+                    row.get::<_, Option<String>>(5)?, // last_checked_tweet_id
+                ))
+            })?;
+            
+            for row in rows {
+                if let Ok(data) = row {
+                    existing_settings.push(data);
+                }
+            }
+        }
+        
+        // テーブルを削除して再作成
+        conn.execute("DROP TABLE reply_settings", [])?;
+        
+        conn.execute(
+            "CREATE TABLE reply_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_bot_ids TEXT NOT NULL,
+                reply_bot_id INTEGER NOT NULL,
+                reply_content TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                last_checked_tweet_ids TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (reply_bot_id) REFERENCES bot_accounts(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        
+        // データを新構造で移行
+        let now = Utc::now().to_rfc3339();
+        for (target_bot_id, reply_bot_ids, reply_content, created_at, last_checked_tweet_id) in existing_settings {
+            // 旧構造: 1つの監視対象、複数の返信者
+            // 新構造: 複数の監視対象、1つの返信者
+            
+            // reply_bot_ids をパースして、各返信者に対して個別の設定を作成
+            if let Ok(reply_bot_id_list) = serde_json::from_str::<Vec<i64>>(&reply_bot_ids) {
+                for reply_bot_id in reply_bot_id_list {
+                    // last_checked_tweet_id を配列形式に変換
+                    let last_checked_tweet_ids = if let Some(tweet_id) = &last_checked_tweet_id {
+                        serde_json::to_string(&vec![format!("{}:{}", target_bot_id, tweet_id)])
+                            .unwrap_or_else(|_| "[]".to_string())
+                    } else {
+                        "[]".to_string()
+                    };
+                    
+                    conn.execute(
+                        "INSERT INTO reply_settings (target_bot_ids, reply_bot_id, reply_content, is_active, last_checked_tweet_ids, created_at, updated_at)
+                         VALUES (?, ?, ?, 1, ?, ?, ?)",
+                        params![
+                            serde_json::to_string(&vec![target_bot_id]).unwrap(),
+                            reply_bot_id,
+                            reply_content,
+                            last_checked_tweet_ids,
+                            created_at,
+                            now
+                        ],
+                    )?;
+                }
+            }
+        }
+        
+        println!("Successfully migrated reply_settings table to new schema");
+    }
+    
+    Ok(())
+}
+
+// 返信設定管理（新仕様）
+#[tauri::command]
+fn save_reply_settings(
+    reply_bot_id: i64,
+    target_bot_ids: Vec<i64>, 
+    reply_content: String, 
+    state: State<AppState>
+) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let now = Utc::now().to_rfc3339();
+    
+    // バリデーション
+    if reply_content.trim().is_empty() {
+        return Err("返信内容が空です".to_string());
+    }
+    if target_bot_ids.is_empty() {
+        return Err("監視対象Botが選択されていません".to_string());
+    }
+    
+    // 既存の設定を無効化
+    conn.execute(
+        "UPDATE reply_settings SET is_active = 0, updated_at = ? WHERE reply_bot_id = ?",
+        params![now, reply_bot_id],
+    ).map_err(|e| e.to_string())?;
+    
+    // 新しい設定を保存
+    let target_bot_ids_json = serde_json::to_string(&target_bot_ids)
+        .map_err(|e| format!("JSON変換エラー: {}", e))?;
+    
+    conn.execute(
+        "INSERT INTO reply_settings (target_bot_ids, reply_bot_id, reply_content, is_active, last_checked_tweet_ids, created_at, updated_at)
+         VALUES (?, ?, ?, 1, '[]', ?, ?)",
+        params![target_bot_ids_json, reply_bot_id, reply_content, now, now],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(conn.last_insert_rowid())
+}
+
+#[tauri::command]
+fn get_reply_settings(state: State<AppState>) -> Result<Vec<ReplySettings>, String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let mut stmt = conn.prepare(
+        "SELECT * FROM reply_settings WHERE is_active = 1 ORDER BY created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    
+    let settings = stmt.query_map([], |row| {
+        Ok(ReplySettings {
+            id: row.get(0)?,
+            target_bot_ids: row.get(1)?,
+            reply_bot_id: row.get(2)?,
+            reply_content: row.get(3)?,
+            is_active: row.get(4)?,
+            last_checked_tweet_ids: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    })
+    .map_err(|e| e.to_string())?
+    .collect::<SqliteResult<Vec<_>>>()
+    .map_err(|e| e.to_string())?;
+    
+    Ok(settings)
+}
+
+#[tauri::command]
+fn delete_reply_settings(id: i64, state: State<AppState>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    
+    conn.execute("DELETE FROM reply_settings WHERE id = ?", params![id])
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+fn update_last_checked_tweet(
+    target_bot_id: i64, 
+    tweet_id: String, 
+    reply_bot_id: i64,
+    state: State<AppState>
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    let now = Utc::now().to_rfc3339();
+    
+    // 現在の last_checked_tweet_ids を取得
+    let current_ids: String = conn.query_row(
+        "SELECT last_checked_tweet_ids FROM reply_settings WHERE reply_bot_id = ? AND is_active = 1",
+        params![reply_bot_id],
+        |row| row.get(0)
+    ).unwrap_or_else(|_| "[]".to_string());
+    
+    // JSON を解析して更新
+    let mut tweet_id_map: std::collections::HashMap<String, String> = if let Ok(ids) = serde_json::from_str::<Vec<String>>(&current_ids) {
+        ids.into_iter()
+            .filter_map(|entry| {
+                let parts: Vec<&str> = entry.split(':').collect();
+                if parts.len() == 2 {
+                    Some((parts[0].to_string(), parts[1].to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+    
+    // 該当するtarget_bot_idのツイートIDを更新
+    tweet_id_map.insert(target_bot_id.to_string(), tweet_id);
+    
+    // JSON 配列形式に戻す
+    let updated_ids: Vec<String> = tweet_id_map.into_iter()
+        .map(|(bot_id, tweet_id)| format!("{}:{}", bot_id, tweet_id))
+        .collect();
+    
+    let updated_ids_json = serde_json::to_string(&updated_ids)
+        .map_err(|e| format!("JSON変換エラー: {}", e))?;
+    
+    conn.execute(
+        "UPDATE reply_settings SET last_checked_tweet_ids = ?, updated_at = ? 
+         WHERE reply_bot_id = ? AND is_active = 1",
+        params![updated_ids_json, now, reply_bot_id],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 以下、既存の関数群...
 // ダッシュボード統計取得
 #[tauri::command]
 fn get_dashboard_stats(state: State<AppState>) -> Result<DashboardStats, String> {
@@ -908,6 +1184,27 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     let scheduled_tweets: Vec<ScheduledTweet> = scheduled_rows.collect::<SqliteResult<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     
+    // 返信設定を取得
+    let mut reply_stmt = conn.prepare("SELECT * FROM reply_settings WHERE is_active = 1 ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    
+    let reply_rows = reply_stmt.query_map([], |row| {
+        Ok(ReplySettings {
+            id: row.get(0)?,
+            target_bot_ids: row.get(1)?,
+            reply_bot_id: row.get(2)?,
+            reply_content: row.get(3)?,
+            is_active: row.get(4)?,
+            last_checked_tweet_ids: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    })
+    .map_err(|e| e.to_string())?;
+    
+    let reply_settings: Vec<ReplySettings> = reply_rows.collect::<SqliteResult<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    
     // 実行ログを取得
     let mut logs_stmt = conn.prepare("SELECT * FROM execution_logs ORDER BY created_at DESC LIMIT 1000")
         .map_err(|e| e.to_string())?;
@@ -949,6 +1246,7 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     let export_data = serde_json::json!({
         "bot_accounts": accounts,
         "scheduled_tweets": scheduled_tweets,
+        "reply_settings": reply_settings,
         "execution_logs": logs,
         "user_settings": settings,
         "exported_at": Utc::now().to_rfc3339()
@@ -962,14 +1260,13 @@ fn export_data(path: String, state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-// GitHub Actions用の設定ファイル出力（投稿リスト対応版）
+// GitHub Actions用の設定ファイル出力（返信機能対応版）
 #[tauri::command]
 fn export_github_config(path: String, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     
     // プロジェクトルートのdataディレクトリに保存するようにパスを調整
     let adjusted_path = if path.starts_with("data/") {
-        // src-tauriから見たプロジェクトルートのdataディレクトリ
         format!("../{}", path)
     } else {
         path
@@ -1015,7 +1312,7 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
             // 投稿リスト形式
             serde_json::json!({
                 "account": account,
-                "scheduled_content_list": content_list_str, // JSON文字列
+                "scheduled_content_list": content_list_str,
                 "current_index": current_index.unwrap_or(0),
                 "scheduled_times": scheduled_times
             })
@@ -1035,10 +1332,32 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
     let bot_configs: Vec<_> = rows.collect::<SqliteResult<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     
+    // 返信設定を取得（新仕様）
+    let mut reply_stmt = conn.prepare("SELECT * FROM reply_settings WHERE is_active = 1")
+        .map_err(|e| e.to_string())?;
+    
+    let reply_rows = reply_stmt.query_map([], |row| {
+        Ok(ReplySettings {
+            id: row.get(0)?,
+            target_bot_ids: row.get(1)?,
+            reply_bot_id: row.get(2)?,
+            reply_content: row.get(3)?,
+            is_active: row.get(4)?,
+            last_checked_tweet_ids: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    })
+    .map_err(|e| e.to_string())?;
+    
+    let reply_settings: Vec<ReplySettings> = reply_rows.collect::<SqliteResult<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    
     // GitHub Actions用設定
     let github_config = serde_json::json!({
         "version": "1.0",
         "bots": bot_configs,
+        "reply_settings": reply_settings,
         "updated_at": Utc::now().to_rfc3339()
     });
     
@@ -1046,7 +1365,7 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
     fs::write(&adjusted_path, serde_json::to_string_pretty(&github_config).unwrap())
         .map_err(|e| format!("ファイル書き込みエラー ({}): {}", adjusted_path, e))?;
     
-    println!("GitHub Actions用設定ファイルを作成しました: {}", adjusted_path);
+    println!("GitHub Actions用設定ファイルを作成しました（新仕様返信機能対応）: {}", adjusted_path);
     Ok(())
 }
 
@@ -1318,7 +1637,11 @@ fn main() {
             get_scheduled_tweets,
             save_scheduled_tweet,
             save_scheduled_tweet_list,
-            update_post_index
+            update_post_index,
+            save_reply_settings,
+            get_reply_settings,
+            delete_reply_settings,
+            update_last_checked_tweet
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

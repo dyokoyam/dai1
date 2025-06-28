@@ -4,7 +4,7 @@ import { FaPlus, FaReply, FaTrash, FaPlay, FaPause, FaCog, FaTwitter, FaKey, FaR
 import './BotManagement.css';
 
 function BotManagement({ onUpdate, userSettings }) {
-  console.log('BotManagement rendering - LIST SUPPORT VERSION');
+  console.log('BotManagement rendering - NEW REPLY SPEC VERSION');
   console.log('userSettings:', userSettings);
   
   const [botAccounts, setBotAccounts] = useState([]);
@@ -33,8 +33,13 @@ function BotManagement({ onUpdate, userSettings }) {
   const [testingBotId, setTestingBotId] = useState(null);
   const [selectedBotForTweet, setSelectedBotForTweet] = useState(null);
   const [tweetContent, setTweetContent] = useState('');
-  const [selectedBotForReply, setSelectedBotForReply] = useState(null);
+  
+  // 返信機能：新仕様
+  const [selectedBotForReply, setSelectedBotForReply] = useState(null); // 返信するBot（「返信」ボタンを押したBot自身）
+  const [selectedTargetBots, setSelectedTargetBots] = useState([]); // 監視対象Bot（複数選択可）
   const [replyContent, setReplyContent] = useState('');
+  const [replySettings, setReplySettings] = useState([]);
+  
   const [selectedBotForConfig, setSelectedBotForConfig] = useState(null);
   const [scheduledTimes, setScheduledTimes] = useState([]);
   
@@ -52,6 +57,7 @@ function BotManagement({ onUpdate, userSettings }) {
   useEffect(() => {
     console.log('useEffect triggered - fetching bot accounts');
     fetchBotAccounts();
+    fetchReplySettings();
   }, []);
 
   const fetchBotAccounts = async () => {
@@ -73,6 +79,17 @@ function BotManagement({ onUpdate, userSettings }) {
     }
   };
 
+  const fetchReplySettings = async () => {
+    try {
+      console.log('Fetching reply settings...');
+      const settings = await invoke('get_reply_settings');
+      console.log('Reply settings loaded:', settings);
+      setReplySettings(settings || []);
+    } catch (error) {
+      console.error('Failed to fetch reply settings:', error);
+    }
+  };
+
   const openAddModal = () => {
     console.log('Opening add modal');
     setCurrentBot({
@@ -87,9 +104,11 @@ function BotManagement({ onUpdate, userSettings }) {
     setIsModalOpen(true);
   };
 
+  // 新仕様：「返信」ボタンを押したBotが返信者として設定される
   const handleReply = (bot) => {
-    console.log('Opening reply modal for bot:', bot);
-    setSelectedBotForReply(bot);
+    console.log('Opening reply settings modal for bot:', bot);
+    setSelectedBotForReply(bot); // 返信するBot（このBotが自動返信する）
+    setSelectedTargetBots([]); // 監視対象Botをリセット
     setReplyContent('');
     setIsReplyModalOpen(true);
   };
@@ -176,6 +195,7 @@ function BotManagement({ onUpdate, userSettings }) {
     setReplyContent('');
     setSelectedBotForTweet(null);
     setSelectedBotForReply(null);
+    setSelectedTargetBots([]);
     setSelectedBotForConfig(null);
     setScheduledTimes([]);
     setPostContentList(['']);
@@ -413,11 +433,17 @@ function BotManagement({ onUpdate, userSettings }) {
     }
   };
 
+  // 新仕様：返信設定保存
   const handleReplySubmit = async (e) => {
     e.preventDefault();
     
     if (!selectedBotForReply) {
-      alert('返信するアカウントを選択してください。');
+      alert('返信するBotが選択されていません。');
+      return;
+    }
+    
+    if (selectedTargetBots.length === 0) {
+      alert('監視対象アカウントを少なくとも1つ選択してください。');
       return;
     }
     
@@ -431,31 +457,64 @@ function BotManagement({ onUpdate, userSettings }) {
       return;
     }
     
-    setTestingBotId(selectedBotForReply.id);
-    
     try {
-      console.log('Sending reply...');
-      const result = await invoke('test_tweet', {
-        request: {
-          account_id: selectedBotForReply.id,
-          content: replyContent
-        }
+      console.log('Saving reply settings (new spec)...');
+      console.log('Reply bot:', selectedBotForReply);
+      console.log('Target bots:', selectedTargetBots);
+      
+      await invoke('save_reply_settings', {
+        replyBotId: selectedBotForReply.id,          // 返信するBot（単一）
+        targetBotIds: selectedTargetBots.map(bot => bot.id), // 監視対象Bot（複数）
+        replyContent: replyContent
       });
       
-      console.log('Reply result:', result);
+      console.log('Reply settings saved successfully');
+      alert(`✅ 返信設定を保存しました！\n\n返信Bot: ${selectedBotForReply.account_name}\n監視対象: ${selectedTargetBots.map(bot => bot.account_name).join(', ')}\n\n選択した監視対象が投稿するたびに、${selectedBotForReply.account_name}が自動返信します。`);
       
-      if (result.success) {
-        alert(`✅ 返信が成功しました！\n\nツイートID: ${result.tweet_id}\n\n「Bot実行ログ」ページで詳細を確認できます。`);
-        if (onUpdate) onUpdate(); // 統計情報を更新
-        closeModal();
-      } else {
-        alert(`❌ 返信に失敗しました。\n\nエラー: ${result.message}\n\n「Bot実行ログ」ページでエラー詳細を確認してください。`);
-      }
+      fetchReplySettings();
+      if (onUpdate) onUpdate();
+      closeModal();
     } catch (error) {
-      console.error('Failed to send reply:', error);
-      alert(`❌ 返信中にエラーが発生しました。\n\nエラー詳細: ${error}\n\nAPI Keyの設定を確認してください。`);
-    } finally {
-      setTestingBotId(null);
+      console.error('Failed to save reply settings:', error);
+      alert(`❌ 返信設定の保存に失敗しました。\n\nエラー詳細: ${error}`);
+    }
+  };
+
+  const handleDeleteReplySettings = async (id) => {
+    if (window.confirm('この返信設定を削除してもよろしいですか？')) {
+      try {
+        await invoke('delete_reply_settings', { id });
+        console.log('Reply settings deleted successfully');
+        fetchReplySettings();
+        if (onUpdate) onUpdate();
+      } catch (error) {
+        console.error('Failed to delete reply settings:', error);
+        alert('返信設定の削除に失敗しました。');
+      }
+    }
+  };
+
+  // 新仕様：監視対象Bot（複数選択）の切り替え
+  const handleTargetBotToggle = (bot, checked) => {
+    if (checked) {
+      setSelectedTargetBots([...selectedTargetBots, bot]);
+    } else {
+      setSelectedTargetBots(selectedTargetBots.filter(b => b.id !== bot.id));
+    }
+  };
+
+  const getBotName = (botId) => {
+    const bot = botAccounts.find(b => b.id === botId);
+    return bot ? bot.account_name : `Bot ${botId}`;
+  };
+
+  // 新仕様：複数の監視対象IDから名前を取得
+  const getTargetBotNames = (targetBotIds) => {
+    try {
+      const ids = JSON.parse(targetBotIds);
+      return ids.map(id => getBotName(id)).join(', ');
+    } catch (error) {
+      return 'N/A';
     }
   };
 
@@ -477,7 +536,9 @@ function BotManagement({ onUpdate, userSettings }) {
     isModalOpen,
     isConfigModalOpen,
     isTweetModalOpen,
-    isReplyModalOpen
+    isReplyModalOpen,
+    selectedBotForReply: selectedBotForReply?.account_name,
+    selectedTargetBots: selectedTargetBots.map(bot => bot.account_name)
   });
 
   if (error) {
@@ -955,48 +1016,69 @@ function BotManagement({ onUpdate, userSettings }) {
         </div>
       )}
 
-      {/* 返信モーダル */}
+      {/* 返信設定モーダル（新仕様版） */}
       {isReplyModalOpen && (
         <div className="modal-overlay">
-          <div className="modal">
+          <div className="modal modal-large">
             <div className="modal-header">
               <h2 className="modal-title">
-                返信作成
+                返信設定 - {selectedBotForReply?.account_name}
               </h2>
             </div>
             
             <form onSubmit={handleReplySubmit}>
               <div className="form-group">
                 <label className="form-label">
-                  <FaRobot /> 返信するアカウント
+                  <FaRobot /> 返信するBot
                 </label>
-                <select
-                  className="form-select"
-                  value={selectedBotForReply?.id || ''}
-                  onChange={(e) => {
-                    const selectedBot = botAccounts.find(bot => bot.id === parseInt(e.target.value));
-                    setSelectedBotForReply(selectedBot);
-                  }}
-                  required
-                >
-                  <option value="">アカウントを選択してください</option>
-                  {botAccounts.map((bot) => (
-                    <option key={bot.id} value={bot.id}>
-                      {bot.account_name} - {bot.status === 'active' ? '稼働中' : '停止中'}
-                    </option>
-                  ))}
-                </select>
+                <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '8px' }}>
+                  このBotが監視対象の投稿に自動返信します
+                </p>
+                <div className="reply-bot-display">
+                  <FaRobot className="reply-bot-icon" />
+                  <span className="reply-bot-name">{selectedBotForReply?.account_name}</span>
+                  <span className="reply-bot-note">（このBotが返信します）</span>
+                </div>
               </div>
 
               <div className="form-group">
                 <label className="form-label">
-                  <FaReply /> 返信内容
+                  <FaList /> 監視対象アカウント（複数選択可）
+                </label>
+                <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '12px' }}>
+                  これらのアカウントが投稿した時に、上記のBotが自動返信します
+                </p>
+                <div className="bot-selection-grid">
+                  {botAccounts.filter(bot => bot.status === 'active' && bot.id !== selectedBotForReply?.id).map((bot) => (
+                    <label key={bot.id} className="bot-selection-item">
+                      <input
+                        type="checkbox"
+                        checked={selectedTargetBots.some(tb => tb.id === bot.id)}
+                        onChange={(e) => handleTargetBotToggle(bot, e.target.checked)}
+                      />
+                      <div className="bot-selection-info">
+                        <span className="bot-selection-name">{bot.account_name}</span>
+                        <span className="bot-selection-type">{bot.api_type}</span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                {selectedTargetBots.length > 0 && (
+                  <div className="selected-bots">
+                    <p>監視対象: {selectedTargetBots.map(bot => bot.account_name).join(', ')}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">
+                  <FaFileAlt /> 返信内容
                 </label>
                 <textarea
                   className="form-textarea"
                   value={replyContent}
                   onChange={(e) => setReplyContent(e.target.value)}
-                  placeholder="返信したい内容を入力してください..."
+                  placeholder="自動返信したい内容を入力してください..."
                   rows={4}
                   maxLength={280}
                   required
@@ -1018,12 +1100,46 @@ function BotManagement({ onUpdate, userSettings }) {
                 <button 
                   type="submit" 
                   className="btn btn-primary"
-                  disabled={testingBotId === selectedBotForReply?.id || replyContent.length > 280 || !selectedBotForReply}
+                  disabled={!selectedBotForReply || selectedTargetBots.length === 0 || replyContent.length > 280}
                 >
-                  {testingBotId === selectedBotForReply?.id ? '返信中...' : '返信'}
+                  設定を保存
                 </button>
               </div>
             </form>
+
+            {/* 既存の返信設定一覧（新仕様版） */}
+            {replySettings.length > 0 && (
+              <div style={{ marginTop: '32px', paddingTop: '24px', borderTop: '1px solid var(--border-color)' }}>
+                <h3 style={{ marginBottom: '16px', fontSize: '18px', fontWeight: '600' }}>現在の返信設定</h3>
+                <div className="reply-settings-list">
+                  {replySettings.map((setting) => (
+                    <div key={setting.id} className="reply-setting-item">
+                      <div className="reply-setting-header">
+                        <div className="reply-setting-info">
+                          <div className="reply-setting-target">
+                            <strong>{getBotName(setting.reply_bot_id)}</strong> が自動返信
+                          </div>
+                          <div className="reply-setting-bots">
+                            監視対象: {getTargetBotNames(setting.target_bot_ids)}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDeleteReplySettings(setting.id)}
+                          title="削除"
+                        >
+                          <FaTrash />
+                        </button>
+                      </div>
+                      <div className="reply-setting-content">
+                        「{setting.reply_content}」
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

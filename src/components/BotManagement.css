@@ -379,91 +379,6 @@ input:checked + .toggle-slider:before {
   }
 }
 
-/* Responsive Design */
-@media (max-width: 768px) {
-  .bot-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .bot-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
-  }
-
-  .bot-status {
-    flex-direction: row;
-    align-items: center;
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .bot-actions {
-    justify-content: center;
-  }
-
-  .bot-actions .btn {
-    flex: 0 1 auto;
-    min-width: 60px;
-  }
-
-  /* Large Modal Responsive */
-  .modal-large {
-    max-width: 95% !important;
-    margin: 10px;
-  }
-
-  /* Time Checkbox Grid Responsive */
-  .time-checkbox-grid {
-    grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
-    gap: 8px;
-    padding: 12px;
-  }
-
-  .time-checkbox {
-    padding: 6px 8px;
-    flex-direction: column;
-    gap: 4px;
-    text-align: center;
-  }
-
-  .time-label {
-    font-size: 12px;
-    min-width: auto;
-  }
-}
-
-@media (max-width: 480px) {
-  .bot-actions {
-    flex-direction: column;
-  }
-
-  .bot-actions .btn {
-    flex: 1;
-    width: 100%;
-  }
-
-  /* Time Checkbox Grid for Very Small Screens */
-  .time-checkbox-grid {
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-    padding: 8px;
-  }
-
-  .time-checkbox {
-    padding: 4px 6px;
-  }
-
-  .time-checkbox input[type="checkbox"] {
-    width: 14px;
-    height: 14px;
-  }
-
-  .time-label {
-    font-size: 11px;
-  }
-}
-
 /* 投稿内容リスト管理用の追加スタイル */
 
 /* 投稿内容リストコンテナ */
@@ -665,8 +580,364 @@ input:checked + .toggle-slider:before {
   color: var(--primary-color);
 }
 
+/* 返信設定UI用の追加スタイル（新仕様対応） */
+
+/* 返信Bot固定表示（新仕様） */
+.reply-bot-display {
+  padding: 12px 16px;
+  background: rgba(79, 70, 229, 0.1);
+  border: 1px solid rgba(79, 70, 229, 0.2);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  transition: all 0.2s ease;
+}
+
+.reply-bot-display:hover {
+  background: rgba(79, 70, 229, 0.15);
+  transform: translateY(-1px);
+}
+
+.reply-bot-display .reply-bot-icon {
+  color: var(--primary-color);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.reply-bot-display .reply-bot-name {
+  font-weight: 600;
+  color: var(--primary-color);
+  font-size: 15px;
+}
+
+.reply-bot-display .reply-bot-note {
+  color: var(--text-light);
+  font-size: 12px;
+  margin-left: auto;
+  font-style: italic;
+}
+
+/* 監視対象Bot選択グリッド（新仕様） */
+.target-bot-selection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+  background: var(--background-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.target-bot-selection-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--white);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.target-bot-selection-item:hover {
+  background: rgba(16, 185, 129, 0.05);
+  border-color: var(--success-color);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.target-bot-selection-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--success-color);
+  margin: 0;
+  cursor: pointer;
+}
+
+.target-bot-selection-item input[type="checkbox"]:checked + .target-bot-selection-info {
+  color: var(--success-color);
+}
+
+.target-bot-selection-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.target-bot-selection-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.target-bot-selection-type {
+  font-size: 12px;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* 選択中監視対象表示（新仕様） */
+.selected-targets {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(16, 185, 129, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.selected-targets p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--success-color);
+  font-weight: 500;
+}
+
+/* Bot選択グリッド（従来のクラス名を維持、新仕様では監視対象用） */
+.bot-selection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+  background: var(--background-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.bot-selection-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--white);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.bot-selection-item:hover {
+  background: rgba(16, 185, 129, 0.05);
+  border-color: var(--success-color);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.bot-selection-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--success-color);
+  margin: 0;
+  cursor: pointer;
+}
+
+.bot-selection-item input[type="checkbox"]:checked + .bot-selection-info {
+  color: var(--success-color);
+}
+
+.bot-selection-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bot-selection-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.bot-selection-type {
+  font-size: 12px;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* 選択中Bot表示 */
+.selected-bots {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: rgba(16, 185, 129, 0.05);
+  border-radius: 8px;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.selected-bots p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--success-color);
+  font-weight: 500;
+}
+
+/* 返信設定一覧（新仕様対応） */
+.reply-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.reply-setting-item {
+  background: var(--white);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 20px;
+  transition: all 0.2s ease;
+  position: relative;
+  border-left: 4px solid var(--primary-color);
+}
+
+.reply-setting-item:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.reply-setting-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.reply-setting-info {
+  flex: 1;
+  margin-right: 12px;
+}
+
+.reply-setting-target {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-color);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reply-setting-target strong {
+  color: var(--primary-color);
+}
+
+/* 新仕様：監視対象表示用 */
+.reply-setting-targets {
+  font-size: 14px;
+  color: var(--text-light);
+  margin-bottom: 4px;
+}
+
+.reply-setting-targets strong {
+  color: var(--success-color);
+}
+
+/* 旧：返信Bot表示（互換性のため残す） */
+.reply-setting-bots {
+  font-size: 14px;
+  color: var(--text-light);
+  margin-bottom: 4px;
+}
+
+.reply-setting-content {
+  background: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text-color);
+  line-height: 1.4;
+  position: relative;
+}
+
+.reply-setting-content::before {
+  content: '"';
+  position: absolute;
+  top: -8px;
+  left: 8px;
+  font-size: 20px;
+  color: var(--text-light);
+  background: var(--background-color);
+  padding: 0 4px;
+}
+
+/* 小さいボタン */
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 /* レスポンシブ対応 */
 @media (max-width: 768px) {
+  .bot-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bot-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .bot-status {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .bot-actions {
+    justify-content: center;
+  }
+
+  .bot-actions .btn {
+    flex: 0 1 auto;
+    min-width: 60px;
+  }
+
+  /* Large Modal Responsive */
+  .modal-large {
+    max-width: 95% !important;
+    margin: 10px;
+  }
+
+  /* Time Checkbox Grid Responsive */
+  .time-checkbox-grid {
+    grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .time-checkbox {
+    padding: 6px 8px;
+    flex-direction: column;
+    gap: 4px;
+    text-align: center;
+  }
+
+  .time-label {
+    font-size: 12px;
+    min-width: auto;
+  }
+
+  /* 投稿内容管理 */
   .modal-large {
     max-width: 95% !important;
     margin: 10px;
@@ -700,9 +971,77 @@ input:checked + .toggle-slider:before {
     flex-direction: row;
     justify-content: space-between;
   }
+
+  /* 返信設定（新仕様対応） */
+  .reply-bot-display {
+    flex-direction: column;
+    text-align: center;
+    gap: 8px;
+  }
+
+  .reply-bot-display .reply-bot-note {
+    margin-left: 0;
+  }
+
+  .bot-selection-grid,
+  .target-bot-selection-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .bot-selection-item,
+  .target-bot-selection-item {
+    padding: 10px 12px;
+  }
+
+  .reply-setting-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .reply-setting-info {
+    margin-right: 0;
+    width: 100%;
+  }
+
+  .btn-sm {
+    align-self: flex-end;
+  }
 }
 
 @media (max-width: 480px) {
+  .bot-actions {
+    flex-direction: column;
+  }
+
+  .bot-actions .btn {
+    flex: 1;
+    width: 100%;
+  }
+
+  /* Time Checkbox Grid for Very Small Screens */
+  .time-checkbox-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .time-checkbox {
+    padding: 4px 6px;
+  }
+
+  .time-checkbox input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+  }
+
+  .time-label {
+    font-size: 11px;
+  }
+
+  /* 投稿内容管理 */
   .post-content-list {
     max-height: 300px;
   }
@@ -719,5 +1058,26 @@ input:checked + .toggle-slider:before {
 
   .add-post-content {
     padding: 12px;
+  }
+
+  /* 返信設定（新仕様対応） */
+  .reply-bot-display {
+    padding: 10px 12px;
+  }
+
+  .bot-selection-item,
+  .target-bot-selection-item {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+
+  .reply-setting-item {
+    padding: 16px;
+  }
+
+  .reply-setting-content {
+    padding: 10px 12px;
+    font-size: 13px;
   }
 }
