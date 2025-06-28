@@ -2,7 +2,7 @@
 
 /**
  * Twitter Bot 自動投稿スクリプト (GitHub Actions対応版)
- * スケジュール投稿専用版（時間範囲判定対応・投稿内容リスト対応・返信機能新仕様対応）
+ * スケジュール投稿専用版（時間範囲判定対応・投稿内容リスト対応・返信機能新仕様対応・エラー修正版）
  */
 
 import { TwitterApi } from 'twitter-api-v2';
@@ -80,6 +80,19 @@ function loadConfig() {
     
     const configData = JSON.parse(readFileSync(config.configPath, 'utf8'));
     log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found, ${configData.reply_settings?.length || 0} reply settings found`);
+    
+    // デバッグ：設定ファイルの構造をログ出力
+    if (configData.bots && configData.bots.length > 0) {
+      log.debug(`Bot configuration structure check:`);
+      configData.bots.forEach((bot, index) => {
+        if (bot && bot.account) {
+          log.debug(`  Bot ${index}: ID=${bot.account.id} (${typeof bot.account.id}), Name=${bot.account.account_name}, Status=${bot.account.status}`);
+        } else {
+          log.warn(`  Bot ${index}: Invalid structure - ${JSON.stringify(bot)}`);
+        }
+      });
+    }
+    
     return configData;
   } catch (error) {
     log.error(`Failed to load configuration: ${error.message}`);
@@ -405,23 +418,91 @@ function getLastCheckedTweetId(replySetting, targetBotId) {
 }
 
 /**
- * Bot名を取得（アカウントIDから）
+ * Bot名を取得（アカウントIDから）- エラー修正版
  */
 function getBotNameById(configData, botId) {
-  const bot = configData.bots.find(b => b.account.id === botId);
-  return bot ? bot.account.account_name : `Bot_${botId}`;
+  log.debug(`Getting bot name for ID: ${botId} (${typeof botId})`);
+  
+  if (!configData || !configData.bots || !Array.isArray(configData.bots)) {
+    log.warn(`Invalid configData.bots structure`);
+    return `Bot_${botId}`;
+  }
+  
+  // Bot IDの型を統一（数値・文字列両対応）
+  const normalizedBotId = parseInt(botId);
+  
+  const bot = configData.bots.find(b => {
+    if (!b || !b.account) {
+      log.debug(`Invalid bot structure: ${JSON.stringify(b)}`);
+      return false;
+    }
+    
+    const botAccountId = parseInt(b.account.id);
+    log.debug(`Comparing ${normalizedBotId} with ${botAccountId}`);
+    return botAccountId === normalizedBotId;
+  });
+  
+  if (bot && bot.account && bot.account.account_name) {
+    log.debug(`Found bot name: ${bot.account.account_name}`);
+    return bot.account.account_name;
+  }
+  
+  log.warn(`Bot not found for ID: ${botId}, available bots: ${configData.bots.map(b => b?.account?.id).join(', ')}`);
+  return `Bot_${botId}`;
 }
 
 /**
- * Botアカウント情報を取得（アカウントIDから）
+ * Botアカウント情報を取得（アカウントIDから）- エラー修正版
  */
 function getBotAccountById(configData, botId) {
-  const bot = configData.bots.find(b => b.account.id === botId);
-  return bot ? bot.account : null;
+  log.debug(`Getting bot account for ID: ${botId} (${typeof botId})`);
+  
+  if (!configData || !configData.bots || !Array.isArray(configData.bots)) {
+    log.error(`Invalid configData structure: bots=${configData?.bots}`);
+    return null;
+  }
+  
+  // Bot IDの型を統一（数値・文字列両対応）
+  const normalizedBotId = parseInt(botId);
+  if (isNaN(normalizedBotId)) {
+    log.error(`Invalid botId: ${botId} cannot be converted to number`);
+    return null;
+  }
+  
+  log.debug(`Searching for bot with ID: ${normalizedBotId}`);
+  
+  const bot = configData.bots.find(b => {
+    if (!b || !b.account) {
+      log.debug(`Skipping invalid bot structure: ${JSON.stringify(b)}`);
+      return false;
+    }
+    
+    const botAccountId = parseInt(b.account.id);
+    if (isNaN(botAccountId)) {
+      log.debug(`Skipping bot with invalid ID: ${b.account.id}`);
+      return false;
+    }
+    
+    log.debug(`Comparing normalized ID ${normalizedBotId} with bot account ID ${botAccountId}`);
+    return botAccountId === normalizedBotId;
+  });
+  
+  if (bot && bot.account) {
+    log.debug(`Found bot account: ${bot.account.account_name} (ID: ${bot.account.id})`);
+    return bot.account;
+  }
+  
+  log.warn(`Bot account not found for ID: ${botId}`);
+  log.debug(`Available bot IDs: ${configData.bots
+    .filter(b => b && b.account && b.account.id)
+    .map(b => `${b.account.id}(${b.account.account_name})`)
+    .join(', ')}`);
+  
+  return null;
 }
 
 /**
- * 新仕様：返信監視・実行を処理
+ * 新仕様：返信監視・実行を処理 - エラー修正版
  */
 async function processReplies(configData) {
   let successCount = 0;
@@ -448,13 +529,14 @@ async function processReplies(configData) {
       // 新仕様：返信するBotの情報を取得（単一）
       const replyBotAccount = getBotAccountById(configData, replySetting.reply_bot_id);
       if (!replyBotAccount) {
-        log.warn(`Reply bot account not found for reply setting ${settingIndex + 1} (ID: ${replySetting.reply_bot_id})`);
+        log.warn(`❌ Reply bot account not found for reply setting ${settingIndex + 1} (ID: ${replySetting.reply_bot_id})`);
+        errorCount++;
         continue;
       }
 
       // 返信するBotがアクティブでない場合はスキップ
       if (replyBotAccount.status !== 'active') {
-        log.debug(`Skipping inactive reply bot: ${replyBotAccount.account_name}`);
+        log.debug(`⏸️ Skipping inactive reply bot: ${replyBotAccount.account_name}`);
         continue;
       }
 
@@ -463,31 +545,38 @@ async function processReplies(configData) {
       try {
         targetBotIds = JSON.parse(replySetting.target_bot_ids);
         if (!Array.isArray(targetBotIds) || targetBotIds.length === 0) {
-          log.warn(`Invalid or empty target_bot_ids for reply setting ${settingIndex + 1}`);
+          log.warn(`❌ Invalid or empty target_bot_ids for reply setting ${settingIndex + 1}: ${replySetting.target_bot_ids}`);
+          errorCount++;
           continue;
         }
       } catch (parseError) {
-        log.error(`Failed to parse target_bot_ids for reply setting ${settingIndex + 1}: ${parseError.message}`);
+        log.error(`❌ Failed to parse target_bot_ids for reply setting ${settingIndex + 1}: ${parseError.message}`);
+        log.error(`❌ Raw target_bot_ids value: ${replySetting.target_bot_ids}`);
+        errorCount++;
         continue;
       }
       
       log.info(`🔍 Reply bot ${replyBotAccount.account_name} monitoring ${targetBotIds.length} targets...`);
 
       // 各監視対象Botをチェック
+      let targetProcessed = 0;
       for (const targetBotId of targetBotIds) {
+        log.debug(`🎯 Processing target bot ID: ${targetBotId}`);
+        
         const targetBotAccount = getBotAccountById(configData, targetBotId);
         if (!targetBotAccount) {
-          log.warn(`Target bot account not found: ${targetBotId}`);
+          log.warn(`❌ Target bot account not found for ID: ${targetBotId}`);
+          errorCount++;
           continue;
         }
 
         // 監視対象Botがアクティブでない場合はスキップ
         if (targetBotAccount.status !== 'active') {
-          log.debug(`Skipping inactive target bot: ${targetBotAccount.account_name}`);
+          log.debug(`⏸️ Skipping inactive target bot: ${targetBotAccount.account_name}`);
           continue;
         }
 
-        log.debug(`👀 Checking ${targetBotAccount.account_name} for new tweets...`);
+        log.info(`👀 Checking ${targetBotAccount.account_name} (ID: ${targetBotId}) for new tweets...`);
 
         try {
           // 監視対象アカウントのTwitterクライアントを作成
@@ -495,6 +584,7 @@ async function processReplies(configData) {
 
           // この監視対象の最後にチェックしたツイートIDを取得
           const lastCheckedTweetId = getLastCheckedTweetId(replySetting, targetBotId);
+          log.debug(`Last checked tweet ID for ${targetBotAccount.account_name}: ${lastCheckedTweetId}`);
 
           // 最新ツイートを取得
           const tweetsResult = await getUserTweets(
@@ -504,7 +594,7 @@ async function processReplies(configData) {
           );
 
           if (!tweetsResult.success) {
-            log.error(`Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
+            log.error(`❌ Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
             errorCount++;
             continue;
           }
@@ -512,7 +602,7 @@ async function processReplies(configData) {
           const newTweets = tweetsResult.data;
           
           if (newTweets.length === 0) {
-            log.debug(`No new tweets found for ${targetBotAccount.account_name}`);
+            log.debug(`📭 No new tweets found for ${targetBotAccount.account_name}`);
             continue;
           }
 
@@ -556,18 +646,23 @@ async function processReplies(configData) {
             }
           }
 
+          targetProcessed++;
           // ツイート処理間の待機
           await new Promise(resolve => setTimeout(resolve, 1000));
 
         } catch (error) {
           errorCount++;
           log.error(`💥 Error processing target bot ${targetBotAccount.account_name}: ${error.message}`);
+          log.debug(`Error stack: ${error.stack}`);
         }
       }
+      
+      log.info(`📊 Reply setting ${settingIndex + 1} completed: processed ${targetProcessed}/${targetBotIds.length} targets`);
 
     } catch (error) {
       errorCount++;
       log.error(`💥 Error processing reply setting ${settingIndex + 1}: ${error.message}`);
+      log.debug(`Error stack: ${error.stack}`);
     }
 
     // 設定間の待機
@@ -709,7 +804,7 @@ function getJapanTime() {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC)...');
+    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC - ERROR FIXED)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
@@ -732,12 +827,12 @@ async function main() {
           try {
             const contentList = JSON.parse(botConfig.scheduled_content_list);
             const currentIndex = botConfig.current_index || 0;
-            log.debug(`Bot ${index + 1}: ${account.account_name} - List: ${contentList.length} items, Current: ${currentIndex + 1}, Next content: "${contentList[currentIndex] || 'undefined'}"`);
+            log.debug(`Bot ${index + 1}: ${account.account_name} (ID: ${account.id}) - List: ${contentList.length} items, Current: ${currentIndex + 1}, Next content: "${contentList[currentIndex] || 'undefined'}"`);
           } catch (e) {
-            log.debug(`Bot ${index + 1}: ${account.account_name} - Invalid content list`);
+            log.debug(`Bot ${index + 1}: ${account.account_name} (ID: ${account.id}) - Invalid content list`);
           }
         } else if (botConfig.scheduled_content) {
-          log.debug(`Bot ${index + 1}: ${account.account_name} - Single content mode`);
+          log.debug(`Bot ${index + 1}: ${account.account_name} (ID: ${account.id}) - Single content mode`);
         }
       }
     });
@@ -751,9 +846,10 @@ async function main() {
             const targetBotIds = JSON.parse(setting.target_bot_ids);
             const replyBotName = getBotNameById(configData, setting.reply_bot_id);
             const targetBotNames = targetBotIds.map(id => getBotNameById(configData, id)).join(', ');
-            log.info(`  ${index + 1}. ${replyBotName} → monitors [${targetBotNames}]`);
+            log.info(`  ${index + 1}. ${replyBotName} (ID: ${setting.reply_bot_id}) → monitors [${targetBotNames}] (IDs: [${targetBotIds.join(', ')}])`);
           } catch (e) {
-            log.warn(`  ${index + 1}. Invalid reply setting format`);
+            log.warn(`  ${index + 1}. Invalid reply setting format: ${e.message}`);
+            log.debug(`  Raw setting: ${JSON.stringify(setting)}`);
           }
         }
       });
@@ -780,6 +876,7 @@ async function main() {
     
   } catch (error) {
     log.error(`💥 Main process error: ${error.message}`);
+    log.debug(`Error stack: ${error.stack}`);
     process.exit(1);
   }
 }
@@ -789,6 +886,7 @@ async function main() {
  */
 process.on('uncaughtException', (error) => {
   log.error(`💥 Uncaught exception: ${error.message}`);
+  log.debug(`Error stack: ${error.stack}`);
   process.exit(1);
 });
 
@@ -800,5 +898,6 @@ process.on('unhandledRejection', (reason, promise) => {
 // スクリプト実行
 main().catch((error) => {
   log.error(`💥 Script execution failed: ${error.message}`);
+  log.debug(`Error stack: ${error.stack}`);
   process.exit(1);
 });
