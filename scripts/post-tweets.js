@@ -69,7 +69,7 @@ function shouldPostNow(scheduledTimes) {
 }
 
 /**
- * 設定ファイルを読み込み
+ * 設定ファイルを読み込み - 改善版
  */
 function loadConfig() {
   try {
@@ -78,8 +78,41 @@ function loadConfig() {
       return null;
     }
     
-    const configData = JSON.parse(readFileSync(config.configPath, 'utf8'));
+    log.info(`📂 Loading configuration from: ${config.configPath}`);
+    
+    const configContent = readFileSync(config.configPath, 'utf8');
+    const configData = JSON.parse(configContent);
+    
     log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found, ${configData.reply_settings?.length || 0} reply settings found`);
+    
+    // 🔍 設定ファイルの詳細分析
+    log.info(`📊 Configuration file analysis:`);
+    log.info(`  📄 File size: ${configContent.length} bytes`);
+    log.info(`  🕐 File modified: ${require('fs').statSync(config.configPath).mtime.toISOString()}`);
+    
+    // 各Botの現在のインデックス状態をログ出力
+    if (configData.bots && configData.bots.length > 0) {
+      log.info(`🤖 Bot index states at load time:`);
+      configData.bots.forEach((bot, index) => {
+        if (bot && bot.account) {
+          const currentIndex = bot.current_index || 0;
+          let contentCount = 'unknown';
+          
+          if (bot.scheduled_content_list) {
+            try {
+              const contentList = JSON.parse(bot.scheduled_content_list);
+              contentCount = Array.isArray(contentList) ? contentList.length : 'invalid';
+            } catch (e) {
+              contentCount = 'parse_error';
+            }
+          } else if (bot.scheduled_content) {
+            contentCount = 1;
+          }
+          
+          log.info(`  🤖 ${bot.account.account_name} (ID: ${bot.account.id}): index=${currentIndex}, content_count=${contentCount}`);
+        }
+      });
+    }
     
     // デバッグ：設定ファイルの構造をログ出力
     if (configData.bots && configData.bots.length > 0) {
@@ -101,7 +134,7 @@ function loadConfig() {
 }
 
 /**
- * 設定ファイルを保存（インデックス更新用）
+ * 設定ファイルを保存（インデックス更新用）- 改善版
  */
 function saveConfig(configData) {
   try {
@@ -110,9 +143,38 @@ function saveConfig(configData) {
       return true;
     }
     
-    writeFileSync(config.configPath, JSON.stringify(configData, null, 2), 'utf8');
-    log.info(`✅ Configuration saved with updated indices to: ${config.configPath}`);
-    return true;
+    // 設定ファイルの保存前にバックアップ作成
+    const configJson = JSON.stringify(configData, null, 2);
+    
+    log.info(`💾 Saving configuration to: ${config.configPath}`);
+    log.debug(`📝 Config content preview: ${configJson.substring(0, 200)}...`);
+    
+    writeFileSync(config.configPath, configJson, 'utf8');
+    
+    // ファイル保存の確認
+    if (existsSync(config.configPath)) {
+      const savedContent = readFileSync(config.configPath, 'utf8');
+      const savedData = JSON.parse(savedContent);
+      
+      // インデックス更新の確認
+      if (savedData.bots && savedData.bots.length > 0) {
+        savedData.bots.forEach((bot, index) => {
+          if (bot.account && bot.current_index !== undefined) {
+            log.info(`🔄 Saved index for ${bot.account.account_name}: ${bot.current_index}`);
+          }
+        });
+      }
+      
+      log.info(`✅ Configuration saved and verified: ${config.configPath}`);
+      
+      // Git への明示的な書き込み完了の確認
+      log.info(`📂 File size: ${savedContent.length} bytes`);
+      log.info(`🕐 Save timestamp: ${new Date().toISOString()}`);
+      
+      return true;
+    } else {
+      throw new Error('File was not saved properly');
+    }
   } catch (error) {
     log.error(`❌ Failed to save configuration: ${error.message}`);
     log.warn(`⚠️ Continuing with in-memory index management`);
@@ -297,7 +359,7 @@ async function postReply(client, content, tweetId, botName) {
 }
 
 /**
- * ユーザーの最新ツイートを取得
+ * ユーザーの最新ツイートを取得 - 修正版
  */
 async function getUserTweets(client, username, sinceId = null) {
   try {
@@ -313,6 +375,8 @@ async function getUserTweets(client, username, sinceId = null) {
       };
     }
 
+    log.debug(`🔍 Getting tweets for user: ${username}, since: ${sinceId || 'beginning'}`);
+
     // ユーザー名からユーザーIDを取得
     const userResponse = await client.v2.userByUsername(username);
     if (!userResponse.data) {
@@ -320,25 +384,76 @@ async function getUserTweets(client, username, sinceId = null) {
     }
 
     const userId = userResponse.data.id;
+    log.debug(`📋 Found user ID: ${userId} for ${username}`);
 
     // ツイートを取得
     const options = {
       max_results: 10,
-      'tweet.fields': ['created_at', 'conversation_id']
+      'tweet.fields': ['created_at', 'conversation_id', 'author_id'],
+      exclude: 'retweets,replies'  // リツイートと返信を除外
     };
 
     if (sinceId) {
       options.since_id = sinceId;
+      log.debug(`📅 Using since_id: ${sinceId}`);
     }
 
+    log.debug(`🚀 Fetching tweets with options: ${JSON.stringify(options)}`);
     const tweetsResponse = await client.v2.userTimeline(userId, options);
     
+    // レスポンス構造をデバッグ出力
+    log.debug(`📦 Twitter API response structure: ${JSON.stringify({
+      hasData: !!tweetsResponse.data,
+      dataType: typeof tweetsResponse.data,
+      dataLength: Array.isArray(tweetsResponse.data) ? tweetsResponse.data.length : 'not array',
+      hasMeta: !!tweetsResponse.meta,
+      hasErrors: !!tweetsResponse.errors,
+      errors: tweetsResponse.errors
+    })}`);
+
+    // データの存在確認
+    if (!tweetsResponse) {
+      log.warn(`⚠️ No response from Twitter API for ${username}`);
+      return { data: [], success: true };
+    }
+
+    // エラーチェック
+    if (tweetsResponse.errors && tweetsResponse.errors.length > 0) {
+      log.warn(`⚠️ Twitter API errors for ${username}: ${JSON.stringify(tweetsResponse.errors)}`);
+      // エラーがあっても、データがある場合は続行
+    }
+
+    // データの正規化
+    let tweets = [];
+    if (tweetsResponse.data && Array.isArray(tweetsResponse.data)) {
+      tweets = tweetsResponse.data;
+    } else if (tweetsResponse.data) {
+      // データが配列でない場合（単一オブジェクト）
+      tweets = [tweetsResponse.data];
+    } else {
+      // データが空の場合
+      tweets = [];
+    }
+
+    log.debug(`📊 Retrieved ${tweets.length} tweets for ${username}`);
+    
+    // 各ツイートの基本情報をログ出力
+    tweets.forEach((tweet, index) => {
+      if (tweet && tweet.id) {
+        log.debug(`  Tweet ${index + 1}: ID=${tweet.id}, Text="${(tweet.text || '').substring(0, 30)}..."`);
+      } else {
+        log.warn(`  Tweet ${index + 1}: Invalid structure - ${JSON.stringify(tweet)}`);
+      }
+    });
+    
     return {
-      data: tweetsResponse.data || [],
-      success: true
+      data: tweets,
+      success: true,
+      meta: tweetsResponse.meta
     };
   } catch (error) {
-    log.error(`Failed to fetch tweets for ${username}: ${error.message}`);
+    log.error(`❌ Failed to fetch tweets for ${username}: ${error.message}`);
+    log.debug(`Error details: ${error.stack}`);
     return { success: false, error: error.message, data: [] };
   }
 }
@@ -601,6 +716,12 @@ async function processReplies(configData) {
 
           const newTweets = tweetsResult.data;
           
+          // ツイートデータの検証
+          if (!Array.isArray(newTweets)) {
+            log.warn(`⚠️ Invalid tweets data structure for ${targetBotAccount.account_name}: expected array, got ${typeof newTweets}`);
+            continue;
+          }
+          
           if (newTweets.length === 0) {
             log.debug(`📭 No new tweets found for ${targetBotAccount.account_name}`);
             continue;
@@ -609,7 +730,13 @@ async function processReplies(configData) {
           log.info(`📨 Found ${newTweets.length} new tweets from ${targetBotAccount.account_name}`);
 
           // 最新のツイートIDを記録（時系列で最新のもの）
-          const latestTweetId = newTweets[0].id;
+          const latestTweet = newTweets[0];
+          if (!latestTweet || !latestTweet.id) {
+            log.warn(`⚠️ Invalid latest tweet structure for ${targetBotAccount.account_name}: ${JSON.stringify(latestTweet)}`);
+            continue;
+          }
+          
+          const latestTweetId = latestTweet.id;
           updateLastCheckedTweetIds(configData, settingIndex, targetBotId, latestTweetId);
           configUpdated = true;
 
@@ -618,6 +745,12 @@ async function processReplies(configData) {
 
           // 各新しいツイートに対して返信処理
           for (const tweet of newTweets) {
+            // ツイートデータの検証
+            if (!tweet || !tweet.id || !tweet.text) {
+              log.warn(`⚠️ Skipping invalid tweet structure: ${JSON.stringify(tweet)}`);
+              continue;
+            }
+            
             log.info(`💬 Processing tweet ${tweet.id} from ${targetBotAccount.account_name}: "${tweet.text.substring(0, 50)}..."`);
 
             try {
@@ -724,10 +857,11 @@ async function processScheduledPosts(configData) {
     // 投稿内容の詳細ログ
     if (postInfo.isFromList) {
       log.info(`📝 Processing scheduled post for: ${account.account_name} [${postInfo.currentIndex + 1}/${postInfo.listLength}]`);
-      log.debug(`Current content: "${postInfo.content}"`);
+      log.info(`📋 Current content (${postInfo.content.length} chars): "${postInfo.content}"`);
       log.debug(`Using index: ${postInfo.currentIndex} (memory: ${memoryIndices.has(account.account_name)})`);
     } else {
       log.info(`📝 Processing scheduled post for: ${account.account_name} [single content]`);
+      log.info(`📋 Content (${postInfo.content.length} chars): "${postInfo.content}"`);
     }
     
     try {
@@ -804,7 +938,7 @@ function getJapanTime() {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC - ERROR FIXED)...');
+    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC - TWITTER API ERROR FIXED)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
@@ -870,8 +1004,34 @@ async function main() {
     log.info(`🏁 Processing completed: ${totalSuccess} total success, ${totalErrors} total errors`);
     log.info(`📊 Breakdown: Scheduled(${scheduledResults.successCount}/${scheduledResults.errorCount}), Replies(${replyResults.successCount}/${replyResults.errorCount})`);
     
+    // 🔧 重要: 設定ファイル更新の最終確認
+    if (existsSync(config.configPath)) {
+      try {
+        const finalConfig = JSON.parse(readFileSync(config.configPath, 'utf8'));
+        log.info(`📋 Final configuration state:`);
+        if (finalConfig.bots) {
+          finalConfig.bots.forEach((bot, index) => {
+            if (bot.account && bot.current_index !== undefined) {
+              log.info(`  🤖 ${bot.account.account_name}: current_index = ${bot.current_index}`);
+            }
+          });
+        }
+        
+        // Git への反映を確実にするため少し待機
+        log.info(`⏳ Waiting for file system sync...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        log.info(`✅ File system sync completed`);
+        
+      } catch (parseError) {
+        log.error(`❌ Failed to read final config: ${parseError.message}`);
+      }
+    }
+    
     if (totalErrors > 0) {
+      log.warn(`⚠️ Process completed with ${totalErrors} errors`);
       process.exit(1);
+    } else {
+      log.info(`🎉 Process completed successfully!`);
     }
     
   } catch (error) {
