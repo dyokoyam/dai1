@@ -2,6 +2,22 @@
   "bots": [
     {
       "account": {
+        "access_token": "1857287056487260160-OPBVWO4U4kg5SipWvTqE1XsjKBRAhS",
+        "access_token_secret": "NXNIh9JCJfZbeRHOPGtA8faXzI8afGs1hmISdUitMGhSm",
+        "account_name": "z5rm6",
+        "api_key": "0Eh8AniekSbJYMC4M8d8npsvq",
+        "api_key_secret": "xa33Z8uaXfaehoParPHH3LefkNNXcGDCksaPorn8IRICs97YO1",
+        "api_type": "Free",
+        "created_at": "2025-06-29T09:02:01.246585200+00:00",
+        "id": 3,
+        "status": "active",
+        "updated_at": "2025-06-29T09:02:43.643499+00:00"
+      },
+      "scheduled_content": null,
+      "scheduled_times": null
+    },
+    {
+      "account": {
         "access_token": "1857289689339985920-km3Wo0L50odTQjapoqVRO5MJC6Equr",
         "access_token_secret": "KMfeQIuotHaZFZ3MIiAfOhtNPkmGJmbdAZ1HWciWfY3Hd",
         "account_name": "z5rm3",
@@ -36,16 +52,16 @@
   ],
   "reply_settings": [
     {
-      "created_at": "2025-06-29T07:53:07.299422900+00:00",
-      "id": 5,
+      "created_at": "2025-06-29T09:03:00.744597800+00:00",
+      "id": 6,
       "is_active": true,
       "last_checked_tweet_ids": "[]",
-      "reply_bot_id": 1,
-      "reply_content": "やあ",
+      "reply_bot_id": 3,
+      "reply_content": "わあい！",
       "target_bot_ids": "[2]",
-      "updated_at": "2025-06-29T07:53:07.299422900+00:00"
+      "updated_at": "2025-06-29T09:03:00.744597800+00:00"
     }
   ],
-  "updated_at": "2025-06-29T07:53:18.470906900+00:00",
+  "updated_at": "2025-06-29T09:03:22.470771800+00:00",
   "version": "1.0"
 }
