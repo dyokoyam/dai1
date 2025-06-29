@@ -69,7 +69,7 @@ function shouldPostNow(scheduledTimes) {
 }
 
 /**
- * 設定ファイルを読み込み
+ * 設定ファイルを読み込み - インデックス状態詳細版
  */
 function loadConfig() {
   try {
@@ -80,6 +80,43 @@ function loadConfig() {
     
     const configData = JSON.parse(readFileSync(config.configPath, 'utf8'));
     log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found, ${configData.reply_settings?.length || 0} reply settings found`);
+    
+    // 🔍 インデックス状態の詳細確認
+    if (configData.bots && configData.bots.length > 0) {
+      log.info(`🤖 Bot index states at startup:`);
+      configData.bots.forEach((bot, index) => {
+        if (bot && bot.account) {
+          const currentIndex = bot.current_index || 0;
+          let contentCount = 'unknown';
+          let nextContent = 'unknown';
+          
+          if (bot.scheduled_content_list) {
+            try {
+              const contentList = JSON.parse(bot.scheduled_content_list);
+              if (Array.isArray(contentList)) {
+                contentCount = contentList.length;
+                nextContent = contentList[currentIndex] || 'out_of_range';
+              }
+            } catch (e) {
+              contentCount = 'parse_error';
+            }
+          } else if (bot.scheduled_content) {
+            contentCount = 1;
+            nextContent = bot.scheduled_content;
+          }
+          
+          log.info(`  🤖 ${bot.account.account_name}: index=${currentIndex}/${contentCount}, next="${nextContent}"`);
+          
+          // 🚨 重複投稿の警告チェック
+          if (currentIndex >= 0 && contentCount > 0 && typeof contentCount === 'number') {
+            const safeIndex = currentIndex % contentCount;
+            if (safeIndex !== currentIndex) {
+              log.warn(`  ⚠️ Index overflow detected for ${bot.account.account_name}: ${currentIndex} >= ${contentCount}`);
+            }
+          }
+        }
+      });
+    }
     
     // デバッグ：設定ファイルの構造をログ出力
     if (configData.bots && configData.bots.length > 0) {
@@ -297,7 +334,7 @@ async function postReply(client, content, tweetId, botName) {
 }
 
 /**
- * ユーザーの最新ツイートを取得 - 修正版
+ * ユーザーの最新ツイートを取得 - Rate Limit対応版
  */
 async function getUserTweets(client, username, sinceId = null) {
   try {
@@ -315,6 +352,9 @@ async function getUserTweets(client, username, sinceId = null) {
 
     log.debug(`🔍 Getting tweets for user: ${username}, since: ${sinceId || 'beginning'}`);
 
+    // Rate Limit対策: 事前待機
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // ユーザー名からユーザーIDを取得
     const userResponse = await client.v2.userByUsername(username);
     if (!userResponse.data) {
@@ -324,9 +364,12 @@ async function getUserTweets(client, username, sinceId = null) {
     const userId = userResponse.data.id;
     log.debug(`📋 Found user ID: ${userId} for ${username}`);
 
+    // Rate Limit対策: API呼び出し間の待機
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
     // ツイートを取得
     const options = {
-      max_results: 10,
+      max_results: 5,  // 制限を緩和（10→5）
       'tweet.fields': ['created_at', 'conversation_id', 'author_id'],
       exclude: 'retweets,replies'  // リツイートと返信を除外
     };
@@ -365,31 +408,48 @@ async function getUserTweets(client, username, sinceId = null) {
     let tweets = [];
     if (tweetsResponse.data && Array.isArray(tweetsResponse.data)) {
       tweets = tweetsResponse.data;
+      log.debug(`✅ Tweets data is properly formatted array with ${tweets.length} items`);
     } else if (tweetsResponse.data) {
       // データが配列でない場合（単一オブジェクト）
       tweets = [tweetsResponse.data];
+      log.debug(`🔄 Converted single tweet object to array`);
     } else {
       // データが空の場合
       tweets = [];
+      log.debug(`📭 No tweets data in response`);
     }
 
     log.debug(`📊 Retrieved ${tweets.length} tweets for ${username}`);
     
     // 各ツイートの基本情報をログ出力
     tweets.forEach((tweet, index) => {
-      if (tweet && tweet.id) {
-        log.debug(`  Tweet ${index + 1}: ID=${tweet.id}, Text="${(tweet.text || '').substring(0, 30)}..."`);
+      if (tweet && typeof tweet === 'object' && tweet.id && tweet.text) {
+        log.debug(`  ✅ Tweet ${index + 1}: ID=${tweet.id}, Text="${(tweet.text || '').substring(0, 30)}..."`);
       } else {
-        log.warn(`  Tweet ${index + 1}: Invalid structure - ${JSON.stringify(tweet)}`);
+        log.warn(`  ❌ Tweet ${index + 1}: Invalid structure - ${JSON.stringify(tweet)}`);
       }
     });
     
+    // 🔍 返すデータの最終チェック
+    log.debug(`🔍 Final return data: Array.isArray(tweets)=${Array.isArray(tweets)}, length=${tweets.length}`);
+    
     return {
-      data: tweets,
+      data: tweets,  // これは配列であることを保証
       success: true,
       meta: tweetsResponse.meta
     };
   } catch (error) {
+    // Rate Limit エラーの特別処理
+    if (error.message && error.message.includes('429')) {
+      log.warn(`⏰ Rate limit reached for ${username}. Will retry later.`);
+      return { 
+        success: false, 
+        error: `Rate limit reached (429)`, 
+        data: [],
+        rateLimited: true 
+      };
+    }
+    
     log.error(`❌ Failed to fetch tweets for ${username}: ${error.message}`);
     log.debug(`Error details: ${error.stack}`);
     return { success: false, error: error.message, data: [] };
@@ -647,14 +707,24 @@ async function processReplies(configData) {
           );
 
           if (!tweetsResult.success) {
-            log.error(`❌ Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
-            errorCount++;
-            continue;
+            // Rate Limitエラーの特別処理
+            if (tweetsResult.rateLimited) {
+              log.warn(`⏰ Rate limit reached for ${targetBotAccount.account_name}, skipping this cycle`);
+              continue; // エラーカウントせずに次へ
+            } else {
+              log.error(`❌ Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
+              errorCount++;
+              continue;
+            }
           }
 
           const newTweets = tweetsResult.data;
           
-          // ツイートデータの検証
+          // ⚠️ 重要：データ構造の修正
+          log.debug(`📦 Raw tweets data type: ${typeof newTweets}, isArray: ${Array.isArray(newTweets)}`);
+          log.debug(`📦 Raw tweets preview: ${JSON.stringify(newTweets).substring(0, 200)}...`);
+          
+          // ツイートデータの検証と修正
           if (!Array.isArray(newTweets)) {
             log.warn(`⚠️ Invalid tweets data structure for ${targetBotAccount.account_name}: expected array, got ${typeof newTweets}`);
             continue;
@@ -675,6 +745,7 @@ async function processReplies(configData) {
           }
           
           const latestTweetId = latestTweet.id;
+          log.info(`📌 Latest tweet ID: ${latestTweetId} from ${targetBotAccount.account_name}`);
           updateLastCheckedTweetIds(configData, settingIndex, targetBotId, latestTweetId);
           configUpdated = true;
 
@@ -708,8 +779,8 @@ async function processReplies(configData) {
                 log.error(`❌ Reply failed from ${replyBotAccount.account_name}: ${replyResult.error}`);
               }
 
-              // レート制限を避けるため少し待機
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              // Rate制限を避けるため待機時間を増加
+              await new Promise(resolve => setTimeout(resolve, 3000));
 
             } catch (error) {
               errorCount++;
@@ -718,8 +789,8 @@ async function processReplies(configData) {
           }
 
           targetProcessed++;
-          // ツイート処理間の待機
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Rate Limit対策: ツイート処理間の待機時間を増加
+          await new Promise(resolve => setTimeout(resolve, 2000));
 
         } catch (error) {
           errorCount++;
@@ -736,15 +807,38 @@ async function processReplies(configData) {
       log.debug(`Error stack: ${error.stack}`);
     }
 
-    // 設定間の待機
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Rate Limit対策: 設定間の待機時間を増加
+    await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
   // 設定ファイルが更新された場合は保存を試行
   if (configUpdated) {
+    log.info(`💾 Configuration has been updated, attempting to save...`);
     const saved = saveConfig(configData);
     if (!saved) {
       log.warn(`⚠️ Config file update failed for reply settings, but memory was updated`);
+    } else {
+      log.info(`✅ Reply settings configuration saved successfully`);
+      
+      // 🔧 GitHub Actions自動コミット確認用ログ
+      log.info(`📝 IMPORTANT: Configuration file has been updated for GitHub Actions auto-commit`);
+      log.info(`📂 Updated file: ${config.configPath}`);
+      log.info(`🕐 Update timestamp: ${new Date().toISOString()}`);
+      
+      // 設定ファイルの現在の状態を出力
+      try {
+        const currentConfig = JSON.parse(readFileSync(config.configPath, 'utf8'));
+        if (currentConfig.reply_settings) {
+          log.info(`🔗 Current reply settings count: ${currentConfig.reply_settings.length}`);
+          currentConfig.reply_settings.forEach((setting, index) => {
+            if (setting.is_active) {
+              log.info(`  Reply setting ${index + 1}: last_checked_tweet_ids = ${setting.last_checked_tweet_ids}`);
+            }
+          });
+        }
+      } catch (e) {
+        log.warn(`Failed to read updated config for verification: ${e.message}`);
+      }
     }
   }
 
@@ -847,9 +941,36 @@ async function processScheduledPosts(configData) {
   
   // 設定ファイルが更新された場合は保存を試行
   if (configUpdated) {
+    log.info(`💾 Scheduled posts configuration has been updated, attempting to save...`);
     const saved = saveConfig(configData);
     if (!saved) {
       log.warn(`⚠️ Config file update failed, but memory indices were updated for this execution`);
+    } else {
+      log.info(`✅ Scheduled posts configuration saved successfully`);
+      
+      // 🔧 GitHub Actions自動コミット確認用ログ
+      log.info(`📝 CRITICAL: Post indices have been updated for GitHub Actions auto-commit`);
+      log.info(`📂 Updated file: ${config.configPath}`);
+      log.info(`🕐 Update timestamp: ${new Date().toISOString()}`);
+      
+      // 更新されたインデックス情報をログ出力
+      try {
+        const currentConfig = JSON.parse(readFileSync(config.configPath, 'utf8'));
+        if (currentConfig.bots) {
+          log.info(`🤖 Updated bot indices in saved config:`);
+          currentConfig.bots.forEach((bot, index) => {
+            if (bot.account && bot.current_index !== undefined) {
+              log.info(`  ${bot.account.account_name}: current_index = ${bot.current_index}`);
+            }
+          });
+        }
+      } catch (e) {
+        log.warn(`Failed to read updated config for verification: ${e.message}`);
+      }
+      
+      // 🚨 自動コミット機能への重要な警告
+      log.warn(`🚨 GITHUB ACTIONS: Please check if auto-commit is working properly!`);
+      log.warn(`🚨 If indices are not committed, duplicate posts will occur in next execution.`);
     }
   }
   
@@ -876,11 +997,12 @@ function getJapanTime() {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC)...');
+    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC - DEBUG VERSION)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
-    
+    log.info(`⚡ Rate limit optimizations: Extended wait times, reduced API calls`);
+    log.info(`🔧 Debug mode: Enhanced logging for troubleshooting duplicate posts and reply issues`);
     // 設定ファイルを読み込み
     const configData = loadConfig();
     
@@ -942,8 +1064,24 @@ async function main() {
     log.info(`🏁 Processing completed: ${totalSuccess} total success, ${totalErrors} total errors`);
     log.info(`📊 Breakdown: Scheduled(${scheduledResults.successCount}/${scheduledResults.errorCount}), Replies(${replyResults.successCount}/${replyResults.errorCount})`);
     
+    // 🚨 重要な警告とチェック
+    if (scheduledResults.errorCount > 0) {
+      log.warn(`🚨 ATTENTION: ${scheduledResults.errorCount} scheduled post errors detected!`);
+      log.warn(`🚨 This might indicate duplicate content issues (403 errors).`);
+      log.warn(`🚨 Please check if GitHub Actions auto-commit is working properly.`);
+      log.warn(`🚨 If post indices are not committed to Git, duplicates will continue to occur.`);
+    }
+    
+    if (replyResults.errorCount > 0) {
+      log.warn(`🚨 ATTENTION: ${replyResults.errorCount} reply errors detected!`);
+      log.warn(`🚨 Please check Twitter API rate limits and data structure processing.`);
+    }
+    
     if (totalErrors > 0) {
+      log.error(`❌ Process completed with ${totalErrors} errors - requires investigation`);
       process.exit(1);
+    } else {
+      log.info(`🎉 Process completed successfully!`);
     }
     
   } catch (error) {
