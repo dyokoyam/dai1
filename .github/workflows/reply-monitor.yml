@@ -1,8 +1,8 @@
-name: Auto Tweet Poster (Scheduled Posts Only)
+name: Reply Monitor (Reply Processing Only)
 
 on:
   schedule:
-    - cron: '0 * * * *'  # 毎時0分に実行（1時間ごと）
+    - cron: '30 * * * *'  # 毎時30分に実行（1時間ごと、自動投稿と30分ずらす）
   workflow_dispatch:  # 手動実行用
 
 # GitHub Actions に書き込み権限を付与
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  post_tweets:
+  monitor_replies:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -33,23 +33,23 @@ jobs:
         run: |
           if [ -f "data/github-config.json" ]; then
             echo "✅ GitHub config file found"
-            cat data/github-config.json | jq '.bots | length' || echo "Config file exists but not valid JSON"
+            cat data/github-config.json | jq '.reply_settings | length' || echo "Config file exists but not valid JSON"
           else
             echo "❌ GitHub config file not found. Please export configuration from Tauri app."
             exit 1
           fi
 
-      - name: Run scheduled tweet poster (Posts Only)
+      - name: Run reply monitor (Replies Only)
         run: |
           cd scripts  
-          node post-tweets.js
+          node reply-monitor.js
         env:
-          # スケジュール投稿用設定
+          # 返信監視用設定
           CONFIG_PATH: ../data/github-config.json
           LOG_LEVEL: info
           NODE_ENV: production
 
-      # 🔄 設定ファイルの自動コミット（投稿インデックス更新用）
+      # 🔄 設定ファイルの自動コミット（返信監視状態更新用）
       - name: Check for config file changes
         id: check_changes
         run: |
@@ -65,7 +65,7 @@ jobs:
             git diff data/github-config.json
           fi
 
-      - name: Commit updated configuration (Post Indices)
+      - name: Commit updated configuration (Reply Monitoring)
         if: steps.check_changes.outputs.changes == 'true'
         run: |
           # Git設定
@@ -76,10 +76,10 @@ jobs:
           git add data/github-config.json
           
           # コミットメッセージに更新内容を含める
-          COMMIT_MSG="🤖 Auto-update: advance post indices for scheduled tweets"
+          COMMIT_MSG="🤖 Auto-update: update reply monitoring status"
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
           
-          git commit -m "$COMMIT_MSG" -m "Updated at: $TIMESTAMP" -m "Updated by: GitHub Actions workflow (scheduled posts)"
+          git commit -m "$COMMIT_MSG" -m "Updated at: $TIMESTAMP" -m "Updated by: GitHub Actions workflow (reply monitoring)"
           
           echo "✅ Configuration changes committed successfully"
 
@@ -94,26 +94,26 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: scheduled-posts-error-logs-${{ github.run_number }}
+          name: reply-monitor-error-logs-${{ github.run_number }}
           path: |
             scripts/*.log
             data/github-config.json
           retention-days: 7
 
       # 🔍 実行結果サマリー
-      - name: Scheduled Posts Execution Summary
+      - name: Reply Monitor Execution Summary
         if: always()
         run: |
-          echo "📊 Scheduled Posts Execution Summary"
-          echo "===================================="
+          echo "📊 Reply Monitor Execution Summary"
+          echo "=================================="
           echo "⏰ Execution Time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
           echo "🔄 Config Updated: ${{ steps.check_changes.outputs.changes }}"
           
           if [ -f "data/github-config.json" ]; then
-            echo "📄 Current Config Status:"
-            jq '.bots[] | {account: .account.account_name, current_index: .current_index, content_count: (.scheduled_content_list | fromjson | length)}' data/github-config.json 2>/dev/null || echo "Config file exists but format issue"
+            echo "📄 Current Reply Settings:"
+            jq '.reply_settings[] | select(.is_active == true) | {reply_bot_id: .reply_bot_id, target_bot_ids: .target_bot_ids, last_checked: .last_checked_tweet_ids}' data/github-config.json 2>/dev/null || echo "Config file exists but format issue"
           fi
           
-          echo "🎯 Function: Scheduled Posts Only"
-          echo "📋 Next: Reply monitoring runs separately"
-          echo "===================================="
+          echo "🎯 Function: Reply Monitoring Only"
+          echo "📋 Next: Scheduled posts run separately"
+          echo "=================================="

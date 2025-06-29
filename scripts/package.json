@@ -1,9 +1,17 @@
 {
   "name": "twitter-auto-manager-scripts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
-  "description": "GitHub Actions scripts for Twitter Auto Manager",
+  "description": "GitHub Actions scripts for Twitter Auto Manager (分離版)",
+  "scripts": {
+    "post-tweets": "node post-tweets.js",
+    "reply-monitor": "node reply-monitor.js",
+    "test:posts": "NODE_ENV=development LOG_LEVEL=debug node post-tweets.js",
+    "test:replies": "NODE_ENV=development LOG_LEVEL=debug node reply-monitor.js",
+    "dry-run:posts": "DRY_RUN=true node post-tweets.js",
+    "dry-run:replies": "DRY_RUN=true node reply-monitor.js"
+  },
   "dependencies": {
     "twitter-api-v2": "^1.23.2"
   },
