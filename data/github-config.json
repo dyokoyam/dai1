@@ -14,8 +14,8 @@
         "updated_at": "2025-06-25T12:56:01.294455900+00:00"
       },
       "current_index": 0,
-      "scheduled_content_list": "[\"おはよう\",\"やっほー\",\"横山大です。\"]",
-      "scheduled_times": "04:00,05:00,06:00"
+      "scheduled_content_list": "[\"髙木友陽です。\",\"やっほー\",\"横山大です。\"]",
+      "scheduled_times": "14:00,15:00,16:00"
     },
     {
       "account": {
@@ -36,16 +36,16 @@
   ],
   "reply_settings": [
     {
-      "created_at": "2025-06-28T18:59:44.398113200+00:00",
-      "id": 3,
+      "created_at": "2025-06-29T05:43:48.857270800+00:00",
+      "id": 4,
       "is_active": true,
       "last_checked_tweet_ids": "[]",
       "reply_bot_id": 1,
       "reply_content": "やあ",
       "target_bot_ids": "[2]",
-      "updated_at": "2025-06-28T18:59:44.398113200+00:00"
+      "updated_at": "2025-06-29T05:43:48.857270800+00:00"
     }
   ],
-  "updated_at": "2025-06-28T18:59:48.762600100+00:00",
+  "updated_at": "2025-06-29T05:43:55.852295900+00:00",
   "version": "1.0"
 }
