@@ -69,7 +69,7 @@ function shouldPostNow(scheduledTimes) {
 }
 
 /**
- * 設定ファイルを読み込み - 改善版
+ * 設定ファイルを読み込み
  */
 function loadConfig() {
   try {
@@ -78,41 +78,8 @@ function loadConfig() {
       return null;
     }
     
-    log.info(`📂 Loading configuration from: ${config.configPath}`);
-    
-    const configContent = readFileSync(config.configPath, 'utf8');
-    const configData = JSON.parse(configContent);
-    
+    const configData = JSON.parse(readFileSync(config.configPath, 'utf8'));
     log.info(`Configuration loaded: ${configData.bots?.length || 0} bots found, ${configData.reply_settings?.length || 0} reply settings found`);
-    
-    // 🔍 設定ファイルの詳細分析
-    log.info(`📊 Configuration file analysis:`);
-    log.info(`  📄 File size: ${configContent.length} bytes`);
-    log.info(`  🕐 File modified: ${require('fs').statSync(config.configPath).mtime.toISOString()}`);
-    
-    // 各Botの現在のインデックス状態をログ出力
-    if (configData.bots && configData.bots.length > 0) {
-      log.info(`🤖 Bot index states at load time:`);
-      configData.bots.forEach((bot, index) => {
-        if (bot && bot.account) {
-          const currentIndex = bot.current_index || 0;
-          let contentCount = 'unknown';
-          
-          if (bot.scheduled_content_list) {
-            try {
-              const contentList = JSON.parse(bot.scheduled_content_list);
-              contentCount = Array.isArray(contentList) ? contentList.length : 'invalid';
-            } catch (e) {
-              contentCount = 'parse_error';
-            }
-          } else if (bot.scheduled_content) {
-            contentCount = 1;
-          }
-          
-          log.info(`  🤖 ${bot.account.account_name} (ID: ${bot.account.id}): index=${currentIndex}, content_count=${contentCount}`);
-        }
-      });
-    }
     
     // デバッグ：設定ファイルの構造をログ出力
     if (configData.bots && configData.bots.length > 0) {
@@ -134,7 +101,7 @@ function loadConfig() {
 }
 
 /**
- * 設定ファイルを保存（インデックス更新用）- 改善版
+ * 設定ファイルを保存（インデックス更新用）
  */
 function saveConfig(configData) {
   try {
@@ -143,38 +110,9 @@ function saveConfig(configData) {
       return true;
     }
     
-    // 設定ファイルの保存前にバックアップ作成
-    const configJson = JSON.stringify(configData, null, 2);
-    
-    log.info(`💾 Saving configuration to: ${config.configPath}`);
-    log.debug(`📝 Config content preview: ${configJson.substring(0, 200)}...`);
-    
-    writeFileSync(config.configPath, configJson, 'utf8');
-    
-    // ファイル保存の確認
-    if (existsSync(config.configPath)) {
-      const savedContent = readFileSync(config.configPath, 'utf8');
-      const savedData = JSON.parse(savedContent);
-      
-      // インデックス更新の確認
-      if (savedData.bots && savedData.bots.length > 0) {
-        savedData.bots.forEach((bot, index) => {
-          if (bot.account && bot.current_index !== undefined) {
-            log.info(`🔄 Saved index for ${bot.account.account_name}: ${bot.current_index}`);
-          }
-        });
-      }
-      
-      log.info(`✅ Configuration saved and verified: ${config.configPath}`);
-      
-      // Git への明示的な書き込み完了の確認
-      log.info(`📂 File size: ${savedContent.length} bytes`);
-      log.info(`🕐 Save timestamp: ${new Date().toISOString()}`);
-      
-      return true;
-    } else {
-      throw new Error('File was not saved properly');
-    }
+    writeFileSync(config.configPath, JSON.stringify(configData, null, 2), 'utf8');
+    log.info(`✅ Configuration saved with updated indices to: ${config.configPath}`);
+    return true;
   } catch (error) {
     log.error(`❌ Failed to save configuration: ${error.message}`);
     log.warn(`⚠️ Continuing with in-memory index management`);
@@ -938,7 +876,7 @@ function getJapanTime() {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC - TWITTER API ERROR FIXED)...');
+    log.info('🚀 Starting Twitter Auto Manager posting process (NEW REPLY SPEC)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
@@ -1004,34 +942,8 @@ async function main() {
     log.info(`🏁 Processing completed: ${totalSuccess} total success, ${totalErrors} total errors`);
     log.info(`📊 Breakdown: Scheduled(${scheduledResults.successCount}/${scheduledResults.errorCount}), Replies(${replyResults.successCount}/${replyResults.errorCount})`);
     
-    // 🔧 重要: 設定ファイル更新の最終確認
-    if (existsSync(config.configPath)) {
-      try {
-        const finalConfig = JSON.parse(readFileSync(config.configPath, 'utf8'));
-        log.info(`📋 Final configuration state:`);
-        if (finalConfig.bots) {
-          finalConfig.bots.forEach((bot, index) => {
-            if (bot.account && bot.current_index !== undefined) {
-              log.info(`  🤖 ${bot.account.account_name}: current_index = ${bot.current_index}`);
-            }
-          });
-        }
-        
-        // Git への反映を確実にするため少し待機
-        log.info(`⏳ Waiting for file system sync...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        log.info(`✅ File system sync completed`);
-        
-      } catch (parseError) {
-        log.error(`❌ Failed to read final config: ${parseError.message}`);
-      }
-    }
-    
     if (totalErrors > 0) {
-      log.warn(`⚠️ Process completed with ${totalErrors} errors`);
       process.exit(1);
-    } else {
-      log.info(`🎉 Process completed successfully!`);
     }
     
   } catch (error) {
