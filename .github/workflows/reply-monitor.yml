@@ -44,9 +44,9 @@ jobs:
           cd scripts  
           node reply-monitor.js
         env:
-          # 返信監視用設定
+          # 返信監視用設定（デバッグモード強化）
           CONFIG_PATH: ../data/github-config.json
-          LOG_LEVEL: info
+          LOG_LEVEL: debug
           NODE_ENV: production
 
       # 🔄 設定ファイルの自動コミット（返信監視状態更新用）

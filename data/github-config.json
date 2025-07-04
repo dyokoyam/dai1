@@ -30,8 +30,8 @@
         "updated_at": "2025-06-25T12:56:01.294455900+00:00"
       },
       "current_index": 0,
-      "scheduled_content_list": "[\"原田です。\",\"友です。\",\"二人合わせて、原田友です。\"]",
-      "scheduled_times": "16:00,17:00,18:00,19:00"
+      "scheduled_content_list": "[\"髙木です。\",\"友陽です。\",\"二人合わせて、髙木友陽です。\"]",
+      "scheduled_times": "03:00,04:00,05:00"
     },
     {
       "account": {
@@ -52,16 +52,16 @@
   ],
   "reply_settings": [
     {
-      "created_at": "2025-06-29T09:03:00.744597800+00:00",
-      "id": 6,
+      "created_at": "2025-07-04T18:03:43.072196600+00:00",
+      "id": 7,
       "is_active": true,
       "last_checked_tweet_ids": "[]",
       "reply_bot_id": 3,
-      "reply_content": "わあい！",
+      "reply_content": "やあ",
       "target_bot_ids": "[2]",
-      "updated_at": "2025-06-29T09:03:00.744597800+00:00"
+      "updated_at": "2025-07-04T18:03:43.072196600+00:00"
     }
   ],
-  "updated_at": "2025-06-29T09:03:22.470771800+00:00",
+  "updated_at": "2025-07-04T18:03:49.872083900+00:00",
   "version": "1.0"
 }

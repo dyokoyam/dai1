@@ -56,7 +56,7 @@ async function postReply(client, content, tweetId, botName) {
 }
 
 /**
- * ユーザーの最新ツイートを取得 - Rate Limit対応版・データ構造修正版
+ * ユーザーの最新ツイートを取得 - twitter-api-v2 ライブラリ対応版
  */
 async function getUserTweets(client, username, sinceId = null) {
   try {
@@ -107,13 +107,7 @@ async function getUserTweets(client, username, sinceId = null) {
     // 🔧 重要：APIレスポンス全体の構造をログ出力（問題特定用）
     log.info(`📦 RAW API Response: ${JSON.stringify(tweetsResponse).substring(0, 500)}...`);
     log.info(`📦 Response type: ${typeof tweetsResponse}`);
-    log.info(`📦 Has data: ${!!tweetsResponse.data}`);
-    log.info(`📦 Data type: ${typeof tweetsResponse.data}`);
-    log.info(`📦 Data is array: ${Array.isArray(tweetsResponse.data)}`);
-    
-    if (tweetsResponse.data) {
-      log.info(`📦 Data length: ${Array.isArray(tweetsResponse.data) ? tweetsResponse.data.length : 'not array'}`);
-    }
+    log.info(`📦 Response keys: [${Object.keys(tweetsResponse).join(', ')}]`);
 
     // データの存在確認
     if (!tweetsResponse) {
@@ -127,50 +121,78 @@ async function getUserTweets(client, username, sinceId = null) {
       // エラーがあっても、データがある場合は続行
     }
 
-    // 🔧 重要：データの正規化（データ構造エラー修正・ログ強化版）
+    // 🔧 重要：twitter-api-v2ライブラリの正しいデータアクセス方法
     let tweets = [];
+    let meta = null;
     
-    if (!tweetsResponse.data) {
-      log.warn(`⚠️ No tweetsResponse.data for ${username}`);
-      tweets = [];
+    // twitter-api-v2の複数のデータアクセスパターンに対応
+    if (tweetsResponse._realData && tweetsResponse._realData.data) {
+      // パターン1: _realData構造の場合
+      log.info(`📦 Using _realData structure`);
+      tweets = tweetsResponse._realData.data;
+      meta = tweetsResponse._realData.meta;
+      log.info(`✅ Found ${tweets.length} tweets in _realData.data`);
     } else if (Array.isArray(tweetsResponse.data)) {
+      // パターン2: 直接data配列の場合
+      log.info(`📦 Using direct data array structure`);
       tweets = tweetsResponse.data;
-      log.info(`✅ Tweets data is properly formatted array with ${tweets.length} items`);
-      
-      // 各ツイートの構造を検証
-      tweets.forEach((tweet, index) => {
-        log.info(`🔍 Tweet ${index + 1} structure: type=${typeof tweet}, hasId=${!!tweet.id}, hasText=${!!tweet.text}`);
-        if (tweet && typeof tweet === 'object' && tweet.id && tweet.text) {
-          log.info(`  ✅ Valid tweet ${index + 1}: ID=${tweet.id}, Text="${tweet.text.substring(0, 30)}..."`);
-        } else {
-          log.warn(`  ❌ Invalid tweet ${index + 1}: ${JSON.stringify(tweet).substring(0, 200)}...`);
-        }
-      });
+      meta = tweetsResponse.meta;
+      log.info(`✅ Found ${tweets.length} tweets in direct data array`);
+    } else if (tweetsResponse.data && typeof tweetsResponse.data === 'object' && tweetsResponse.data.data) {
+      // パターン3: data.data構造の場合
+      log.info(`📦 Using data.data structure`);
+      tweets = tweetsResponse.data.data;
+      meta = tweetsResponse.data.meta;
+      log.info(`✅ Found ${tweets.length} tweets in data.data`);
     } else {
-      // データが配列でない場合の詳細ログ
-      log.warn(`⚠️ tweetsResponse.data is not an array for ${username}`);
-      log.warn(`Data type: ${typeof tweetsResponse.data}`);
-      log.warn(`Data content: ${JSON.stringify(tweetsResponse.data).substring(0, 200)}...`);
+      // パターン4: その他の構造を詳細に調査
+      log.warn(`⚠️ Unexpected response structure, investigating...`);
+      log.info(`📦 Has data: ${!!tweetsResponse.data}`);
+      log.info(`📦 Data type: ${typeof tweetsResponse.data}`);
+      log.info(`📦 Data is array: ${Array.isArray(tweetsResponse.data)}`);
       
-      // 単一オブジェクトかどうかチェック
+      if (tweetsResponse.data) {
+        log.info(`📦 Data keys: [${Object.keys(tweetsResponse.data).join(', ')}]`);
+        log.info(`📦 Data content sample: ${JSON.stringify(tweetsResponse.data).substring(0, 200)}...`);
+      }
+      
+      // フォールバック：可能な限りデータを抽出
       if (typeof tweetsResponse.data === 'object' && tweetsResponse.data.id && tweetsResponse.data.text) {
+        // 単一ツイートオブジェクトの場合
         tweets = [tweetsResponse.data];
         log.info(`🔄 Converted single tweet object to array`);
       } else {
-        log.error(`❌ Unexpected data structure: ${JSON.stringify(tweetsResponse.data)}`);
+        log.error(`❌ Unable to extract tweets from response structure`);
         tweets = [];
       }
     }
 
-    log.info(`📊 Final processed tweets count: ${tweets.length} for ${username}`);
-    
-    // 🔍 返すデータの最終検証
-    log.info(`🔍 Returning data structure: isArray=${Array.isArray(tweets)}, length=${tweets.length}`);
+    // ツイートデータの検証
+    if (Array.isArray(tweets)) {
+      log.info(`📊 Processing ${tweets.length} tweets`);
+      
+      // 各ツイートの構造を検証
+      const validTweets = [];
+      tweets.forEach((tweet, index) => {
+        if (tweet && typeof tweet === 'object' && tweet.id && tweet.text) {
+          validTweets.push(tweet);
+          log.info(`  ✅ Valid tweet ${index + 1}: ID=${tweet.id}, Text="${tweet.text.substring(0, 30)}..."`);
+        } else {
+          log.warn(`  ❌ Invalid tweet ${index + 1}: ${JSON.stringify(tweet).substring(0, 100)}...`);
+        }
+      });
+      
+      tweets = validTweets;
+      log.info(`📊 Final processed tweets count: ${tweets.length} for ${username}`);
+    } else {
+      log.error(`❌ tweets is not an array: ${typeof tweets}`);
+      tweets = [];
+    }
     
     return {
-      data: tweets,  // これは確実に配列
+      data: tweets,  // 検証済みのツイート配列
       success: true,
-      meta: tweetsResponse.meta
+      meta: meta
     };
   } catch (error) {
     // Rate Limit エラーの特別処理
@@ -265,7 +287,7 @@ function getLastCheckedTweetId(replySetting, targetBotId) {
 }
 
 /**
- * 新仕様：返信監視・実行を処理 - データ構造エラー修正版
+ * 新仕様：返信監視・実行を処理 - twitter-api-v2対応版
  */
 async function processReplies(configData) {
   let successCount = 0;
@@ -368,90 +390,26 @@ async function processReplies(configData) {
             }
           }
 
-          // 🔧 重要：データ構造の修正（配列であることを保証）・詳細ログ版
+          // ツイートデータの取得
           const newTweets = tweetsResult.data;
           
-          log.info(`📦 Tweet data received: type=${typeof newTweets}, isArray=${Array.isArray(newTweets)}`);
+          log.info(`📦 Tweet data received: type=${typeof newTweets}, isArray=${Array.isArray(newTweets)}, length=${newTweets.length}`);
           
-          if (newTweets && Array.isArray(newTweets)) {
-            log.info(`📦 Tweet array length: ${newTweets.length}`);
-            
-            // 配列の各要素の構造を詳しく検証
-            newTweets.forEach((item, index) => {
-              log.info(`🔍 Item ${index + 1} analysis:`);
-              log.info(`  Type: ${typeof item}`);
-              log.info(`  Is object: ${typeof item === 'object' && item !== null}`);
-              
-              if (typeof item === 'object' && item !== null) {
-                // オブジェクトのキーを確認
-                const keys = Object.keys(item);
-                log.info(`  Keys: [${keys.join(', ')}]`);
-                
-                // Twitter APIレスポンス全体が混入している場合の検出
-                if (keys.includes('data') && keys.includes('meta')) {
-                  log.error(`❌ Item ${index + 1}: API response object detected instead of tweet!`);
-                  log.error(`  This is the root cause: ${JSON.stringify(item).substring(0, 200)}...`);
-                  return; // この要素はスキップ
-                }
-                
-                // 正しいツイートオブジェクトの検証
-                if (item.id && item.text) {
-                  log.info(`  ✅ Valid tweet: ID=${item.id}, Text="${item.text.substring(0, 30)}..."`);
-                } else {
-                  log.warn(`  ⚠️ Missing required fields: hasId=${!!item.id}, hasText=${!!item.text}`);
-                  log.warn(`  Content: ${JSON.stringify(item).substring(0, 100)}...`);
-                }
-              } else {
-                log.error(`❌ Item ${index + 1}: Not an object - ${JSON.stringify(item)}`);
-              }
-            });
-          } else {
-            log.error(`❌ newTweets is not an array: type=${typeof newTweets}`);
-            log.error(`Content: ${JSON.stringify(newTweets).substring(0, 200)}...`);
-          }
-          
-          // ⚠️ データ構造の検証強化
           if (!Array.isArray(newTweets)) {
             log.warn(`⚠️ Invalid tweets data structure for ${targetBotAccount.account_name}: expected array, got ${typeof newTweets}`);
-            log.debug(`Raw data: ${JSON.stringify(newTweets).substring(0, 100)}...`);
             continue;
           }
           
-          // 🔧 APIレスポンス全体が混入している場合の修正処理
-          const validTweets = [];
-          for (let i = 0; i < newTweets.length; i++) {
-            const item = newTweets[i];
-            
-            // APIレスポンス全体が混入している場合の検出と修正
-            if (typeof item === 'object' && item !== null && item.data && item.meta && Array.isArray(item.data)) {
-              log.warn(`🔧 Detected API response object at index ${i}, extracting tweets...`);
-              // APIレスポンス内のdata配列を抽出
-              item.data.forEach(tweet => {
-                if (tweet && typeof tweet === 'object' && tweet.id && tweet.text) {
-                  validTweets.push(tweet);
-                  log.info(`  ↳ Extracted valid tweet: ${tweet.id}`);
-                }
-              });
-            } else if (typeof item === 'object' && item !== null && item.id && item.text) {
-              // 正常なツイートオブジェクト
-              validTweets.push(item);
-              log.info(`  ✅ Valid tweet: ${item.id}`);
-            } else {
-              log.warn(`  ❌ Skipping invalid item at index ${i}: ${JSON.stringify(item).substring(0, 100)}...`);
-            }
-          }
-          
-          if (validTweets.length === 0) {
-            log.debug(`📭 No valid tweets found for ${targetBotAccount.account_name} after processing`);
+          if (newTweets.length === 0) {
+            log.debug(`📭 No new tweets found for ${targetBotAccount.account_name}`);
             continue;
           }
 
-          log.info(`📨 Found ${validTweets.length} valid tweets from ${targetBotAccount.account_name}`);
+          log.info(`📨 Found ${newTweets.length} new tweets from ${targetBotAccount.account_name}`);
 
           // 最新のツイートIDを記録（時系列で最新のもの）
-          const latestTweet = validTweets[0];
+          const latestTweet = newTweets[0];
           
-          // 🔧 ツイートオブジェクトの構造検証強化
           if (!latestTweet || typeof latestTweet !== 'object' || !latestTweet.id) {
             log.warn(`⚠️ Invalid latest tweet structure for ${targetBotAccount.account_name}`);
             log.debug(`Latest tweet data: ${JSON.stringify(latestTweet)}`);
@@ -467,8 +425,7 @@ async function processReplies(configData) {
           const replyClient = createTwitterClient(replyBotAccount);
 
           // 各新しいツイートに対して返信処理
-          for (const tweet of validTweets) {
-            // 🔧 ツイートデータの詳細検証（既に validTweets で検証済みだが念のため）
+          for (const tweet of newTweets) {
             if (!tweet || typeof tweet !== 'object' || !tweet.id || !tweet.text) {
               log.warn(`⚠️ Skipping invalid tweet structure`);
               log.debug(`Invalid tweet: ${JSON.stringify(tweet)}`);
