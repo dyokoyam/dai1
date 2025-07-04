@@ -55,11 +55,11 @@
       "created_at": "2025-07-04T18:03:43.072196600+00:00",
       "id": 7,
       "is_active": true,
-      "last_checked_tweet_ids": "[\"2:1941201472949191053\"]",
+      "last_checked_tweet_ids": "[\"2:1941214067534029202\"]",
       "reply_bot_id": 3,
       "reply_content": "やあ",
       "target_bot_ids": "[2]",
-      "updated_at": "2025-07-04T18:46:07.268Z"
+      "updated_at": "2025-07-04T19:33:32.126Z"
     }
   ],
   "updated_at": "2025-07-04T18:03:49.872083900+00:00",
