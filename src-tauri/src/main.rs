@@ -182,14 +182,17 @@ fn cleanup_orphaned_reply_settings(conn: &Connection) -> Result<()> {
         }
     }
     
+    // 孤立した設定の数を記録
+    let orphaned_count = orphaned_settings.len();
+    
     // 孤立した設定を削除
     for setting_id in orphaned_settings {
         conn.execute("DELETE FROM reply_settings WHERE id = ?", params![setting_id])?;
     }
     
-    if deleted_by_reply_bot > 0 || !orphaned_settings.is_empty() {
+    if deleted_by_reply_bot > 0 || orphaned_count > 0 {
         println!("Cleaned up orphaned reply settings: {} by reply_bot, {} by target_bots", 
-            deleted_by_reply_bot, orphaned_settings.len());
+            deleted_by_reply_bot, orphaned_count);
     }
     
     Ok(())
@@ -647,7 +650,7 @@ fn get_reply_settings(state: State<AppState>) -> Result<Vec<ReplySettings>, Stri
         if let Ok(target_bot_ids) = serde_json::from_str::<Vec<i64>>(&setting.target_bot_ids) {
             let mut valid_targets = Vec::new();
             
-            for target_id in target_bot_ids {
+            for target_id in &target_bot_ids {
                 let exists: i32 = conn.query_row(
                     "SELECT COUNT(*) FROM bot_accounts WHERE id = ?",
                     params![target_id],
@@ -655,7 +658,7 @@ fn get_reply_settings(state: State<AppState>) -> Result<Vec<ReplySettings>, Stri
                 ).unwrap_or(0);
                 
                 if exists > 0 {
-                    valid_targets.push(target_id);
+                    valid_targets.push(*target_id);
                 }
             }
             
@@ -936,26 +939,28 @@ fn delete_bot_account(id: i64, state: State<AppState>) -> Result<(), String> {
     // 2. 削除対象のBotが監視対象として含まれている設定から除去
     let mut settings_to_update = Vec::new();
     {
-        let mut stmt = conn.prepare("SELECT id, target_bot_ids FROM reply_settings WHERE is_active = 1")?;
+        let mut stmt = conn.prepare("SELECT id, target_bot_ids FROM reply_settings WHERE is_active = 1")
+            .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             let setting_id: i64 = row.get(0)?;
             let target_bot_ids_json: String = row.get(1)?;
             Ok((setting_id, target_bot_ids_json))
-        })?;
+        }).map_err(|e| e.to_string())?;
         
         for row in rows {
             if let Ok((setting_id, target_bot_ids_json)) = row {
-                if let Ok(mut target_bot_ids) = serde_json::from_str::<Vec<i64>>(&target_bot_ids_json) {
+                if let Ok(target_bot_ids) = serde_json::from_str::<Vec<i64>>(&target_bot_ids_json) {
                     let original_len = target_bot_ids.len();
-                    target_bot_ids.retain(|&x| x != id);
+                    let mut updated_target_bot_ids = target_bot_ids;
+                    updated_target_bot_ids.retain(|&x| x != id);
                     
-                    if target_bot_ids.len() != original_len {
-                        if target_bot_ids.is_empty() {
+                    if updated_target_bot_ids.len() != original_len {
+                        if updated_target_bot_ids.is_empty() {
                             // 監視対象がなくなった場合は設定を削除
                             settings_to_update.push((setting_id, None));
                         } else {
                             // 監視対象を更新
-                            if let Ok(updated_json) = serde_json::to_string(&target_bot_ids) {
+                            if let Ok(updated_json) = serde_json::to_string(&updated_target_bot_ids) {
                                 settings_to_update.push((setting_id, Some(updated_json)));
                             }
                         }
