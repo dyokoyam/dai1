@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * Twitter Bot 返信監視スクリプト（返信専用版）
+ * Twitter Bot 返信監視スクリプト（返信専用版・重複監視対策版）
  * 返信監視・実行のみを処理 - スケジュール投稿は別ファイル
+ * 
+ * 🆕 同一ターゲット重複監視対策:
+ * - 監視対象アカウントごとに1回だけツイート取得
+ * - 取得したツイートを複数の返信Botで共有
+ * - Rate Limit問題を根本的に解決
  */
 
 import { 
@@ -287,12 +292,130 @@ function getLastCheckedTweetId(replySetting, targetBotId) {
 }
 
 /**
- * 新仕様：返信監視・実行を処理 - twitter-api-v2対応版
+ * 🆕 監視対象アカウントのツイートを事前にキャッシュ
+ * Rate Limit問題を解決するため、同一ターゲットは1回だけAPI呼び出し
+ */
+async function preloadTargetTweets(configData) {
+  const tweetsCache = new Map(); // targetBotId -> { tweets: [], account: BotAccount, error: string|null }
+  const targetAccountsToFetch = new Set();
+  
+  // 1. 全返信設定から監視対象アカウントを収集（重複除去）
+  log.info(`🔄 Phase 1: Collecting unique target accounts to fetch...`);
+  
+  for (const replySetting of configData.reply_settings) {
+    if (!replySetting.is_active) continue;
+    
+    try {
+      const targetBotIds = JSON.parse(replySetting.target_bot_ids);
+      if (Array.isArray(targetBotIds)) {
+        targetBotIds.forEach(id => {
+          const targetAccount = getBotAccountById(configData, id);
+          if (targetAccount && targetAccount.status === 'active') {
+            targetAccountsToFetch.add(id);
+          }
+        });
+      }
+    } catch (e) {
+      // パースエラーは後で処理
+    }
+  }
+  
+  log.info(`📋 Found ${targetAccountsToFetch.size} unique target accounts to fetch: [${Array.from(targetAccountsToFetch).join(', ')}]`);
+  
+  // 2. 監視対象アカウントごに1回だけツイートを取得してキャッシュ
+  log.info(`🔄 Phase 2: Fetching tweets for each target account...`);
+  
+  for (const targetBotId of targetAccountsToFetch) {
+    const targetAccount = getBotAccountById(configData, targetBotId);
+    if (!targetAccount) {
+      log.warn(`⚠️ Target account ${targetBotId} not found during preload`);
+      continue;
+    }
+    
+    log.info(`📡 [CACHE] Fetching tweets for ${targetAccount.account_name} (ID: ${targetBotId})...`);
+    
+    try {
+      // Twitter クライアントを作成
+      const targetClient = createTwitterClient(targetAccount);
+      
+      // 🔧 last_checked_tweet_idの取得：全返信設定から最新の値を取得
+      let mostRecentLastCheckedId = null;
+      for (const replySetting of configData.reply_settings) {
+        if (!replySetting.is_active) continue;
+        
+        try {
+          const targetBotIds = JSON.parse(replySetting.target_bot_ids);
+          if (targetBotIds.includes(targetBotId)) {
+            const lastCheckedId = getLastCheckedTweetId(replySetting, targetBotId);
+            if (lastCheckedId) {
+              // より新しいツイートIDを優先（IDは時系列順なので数値比較可能）
+              if (!mostRecentLastCheckedId || lastCheckedId > mostRecentLastCheckedId) {
+                mostRecentLastCheckedId = lastCheckedId;
+              }
+            }
+          }
+        } catch (e) {
+          // パースエラーは無視
+        }
+      }
+      
+      log.debug(`[CACHE] Most recent last_checked_tweet_id for ${targetAccount.account_name}: ${mostRecentLastCheckedId}`);
+      
+      // ツイートを取得
+      const tweetsResult = await getUserTweets(
+        targetClient, 
+        targetAccount.account_name, 
+        mostRecentLastCheckedId
+      );
+      
+      if (tweetsResult.success) {
+        tweetsCache.set(targetBotId, {
+          tweets: tweetsResult.data || [],
+          account: targetAccount,
+          error: null,
+          lastCheckedId: mostRecentLastCheckedId
+        });
+        log.info(`✅ [CACHE] Successfully cached ${tweetsResult.data.length} tweets for ${targetAccount.account_name}`);
+      } else {
+        tweetsCache.set(targetBotId, {
+          tweets: [],
+          account: targetAccount,
+          error: tweetsResult.error,
+          rateLimited: tweetsResult.rateLimited || false
+        });
+        
+        if (tweetsResult.rateLimited) {
+          log.warn(`⏰ [CACHE] Rate limit reached for ${targetAccount.account_name} - cached as rate limited`);
+        } else {
+          log.error(`❌ [CACHE] Failed to fetch tweets for ${targetAccount.account_name}: ${tweetsResult.error}`);
+        }
+      }
+      
+      // Rate Limit対策: アカウント間の待機時間
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+    } catch (error) {
+      log.error(`💥 [CACHE] Error fetching tweets for ${targetAccount.account_name}: ${error.message}`);
+      tweetsCache.set(targetBotId, {
+        tweets: [],
+        account: targetAccount,
+        error: error.message
+      });
+    }
+  }
+  
+  log.info(`🎯 Phase 2 completed: Cached tweets for ${tweetsCache.size} target accounts`);
+  return tweetsCache;
+}
+
+/**
+ * 🆕 新仕様：返信監視・実行を処理 - キャッシュ最適化版
+ * 同一ターゲットの重複監視対策を実装
  */
 async function processReplies(configData) {
   let successCount = 0;
   let errorCount = 0;
-  let skippedCount = 0; // 設定不備によるスキップ数
+  let skippedCount = 0;
   let configUpdated = false;
   
   if (!configData.reply_settings || configData.reply_settings.length === 0) {
@@ -300,7 +423,13 @@ async function processReplies(configData) {
     return { successCount, errorCount };
   }
 
-  log.info(`🔍 Processing ${configData.reply_settings.length} reply settings (NEW SPEC)...`);
+  log.info(`🔍 Processing ${configData.reply_settings.length} reply settings (CACHE OPTIMIZED VERSION)...`);
+  
+  // 🆕 Phase 1 & 2: 監視対象アカウントのツイートを事前にキャッシュ
+  const tweetsCache = await preloadTargetTweets(configData);
+  
+  // Phase 3: 各返信設定を処理（キャッシュを使用）
+  log.info(`🔄 Phase 3: Processing reply settings using cached tweets...`);
 
   for (let settingIndex = 0; settingIndex < configData.reply_settings.length; settingIndex++) {
     const replySetting = configData.reply_settings[settingIndex];
@@ -318,7 +447,7 @@ async function processReplies(configData) {
         log.warn(`⚠️ Skipping orphaned reply setting: reply_bot_id ${replySetting.reply_bot_id} not found (setting may be outdated)`);
         log.info(`📝 Available bot IDs: ${configData.bots.map(b => `${b.account.id}(${b.account.account_name})`).join(', ')}`);
         skippedCount++;
-        continue; // エラーカウントに含めない
+        continue;
       }
 
       // 返信するBotがアクティブでない場合はスキップ
@@ -334,154 +463,125 @@ async function processReplies(configData) {
         if (!Array.isArray(targetBotIds) || targetBotIds.length === 0) {
           log.warn(`⚠️ Skipping reply setting with invalid target_bot_ids: ${replySetting.target_bot_ids}`);
           skippedCount++;
-          continue; // エラーカウントに含めない
+          continue;
         }
       } catch (parseError) {
         log.warn(`⚠️ Skipping reply setting with unparseable target_bot_ids: ${replySetting.target_bot_ids}`);
         log.debug(`Parse error: ${parseError.message}`);
         skippedCount++;
-        continue; // エラーカウントに含めない
+        continue;
       }
       
-      log.info(`🔍 Reply bot ${replyBotAccount.account_name} monitoring ${targetBotIds.length} targets...`);
+      log.info(`🔍 Reply bot ${replyBotAccount.account_name} monitoring ${targetBotIds.length} targets (using cache)...`);
 
-      // 各監視対象Botをチェック
+      // 🆕 各監視対象Botをチェック（キャッシュを使用）
       let targetProcessed = 0;
       for (const targetBotId of targetBotIds) {
-        log.debug(`🎯 Processing target bot ID: ${targetBotId}`);
+        log.debug(`🎯 Processing target bot ID: ${targetBotId} (from cache)`);
         
-        const targetBotAccount = getBotAccountById(configData, targetBotId);
-        if (!targetBotAccount) {
-          log.warn(`⚠️ Skipping orphaned target bot: ID ${targetBotId} not found (setting may be outdated)`);
-          continue; // エラーカウントに含めない（個別Botの不存在は設定問題）
+        // キャッシュから取得
+        const cachedData = tweetsCache.get(targetBotId);
+        if (!cachedData) {
+          log.warn(`⚠️ No cached data for target bot ID: ${targetBotId}`);
+          continue;
         }
+        
+        const targetBotAccount = cachedData.account;
+        log.info(`👀 [CACHE] Processing ${targetBotAccount.account_name} (ID: ${targetBotId})...`);
 
-        // 監視対象Botがアクティブでない場合はスキップ
-        if (targetBotAccount.status !== 'active') {
-          log.debug(`⏸️ Skipping inactive target bot: ${targetBotAccount.account_name}`);
+        // Rate Limitエラーのチェック
+        if (cachedData.rateLimited) {
+          log.warn(`⏰ [CACHE] Rate limit detected for ${targetBotAccount.account_name}, skipping this cycle`);
+          continue;
+        }
+        
+        // その他のエラーチェック
+        if (cachedData.error) {
+          log.error(`❌ [CACHE] Cached error for ${targetBotAccount.account_name}: ${cachedData.error}`);
+          errorCount++;
           continue;
         }
 
-        log.info(`👀 Checking ${targetBotAccount.account_name} (ID: ${targetBotId}) for new tweets...`);
-
-        try {
-          // 監視対象アカウントのTwitterクライアントを作成
-          const targetClient = createTwitterClient(targetBotAccount);
-
-          // この監視対象の最後にチェックしたツイートIDを取得
-          const lastCheckedTweetId = getLastCheckedTweetId(replySetting, targetBotId);
-          log.debug(`Last checked tweet ID for ${targetBotAccount.account_name}: ${lastCheckedTweetId}`);
-
-          // 最新ツイートを取得
-          const tweetsResult = await getUserTweets(
-            targetClient, 
-            targetBotAccount.account_name, 
-            lastCheckedTweetId
-          );
-
-          if (!tweetsResult.success) {
-            // Rate Limitエラーの特別処理
-            if (tweetsResult.rateLimited) {
-              log.warn(`⏰ Rate limit reached for ${targetBotAccount.account_name}, skipping this cycle`);
-              continue; // エラーカウントせずに次へ
-            } else {
-              log.error(`❌ Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
-              errorCount++; // 実際のAPIエラーはカウント
-              continue;
-            }
-          }
-
-          // ツイートデータの取得
-          const newTweets = tweetsResult.data;
-          
-          log.info(`📦 Tweet data received: type=${typeof newTweets}, isArray=${Array.isArray(newTweets)}, length=${newTweets.length}`);
-          
-          if (!Array.isArray(newTweets)) {
-            log.warn(`⚠️ Invalid tweets data structure for ${targetBotAccount.account_name}: expected array, got ${typeof newTweets}`);
-            continue;
-          }
-          
-          if (newTweets.length === 0) {
-            log.debug(`📭 No new tweets found for ${targetBotAccount.account_name}`);
-            continue;
-          }
-
-          log.info(`📨 Found ${newTweets.length} new tweets from ${targetBotAccount.account_name}`);
-
-          // 最新のツイートIDを記録（時系列で最新のもの）
-          const latestTweet = newTweets[0];
-          
-          if (!latestTweet || typeof latestTweet !== 'object' || !latestTweet.id) {
-            log.warn(`⚠️ Invalid latest tweet structure for ${targetBotAccount.account_name}`);
-            log.debug(`Latest tweet data: ${JSON.stringify(latestTweet)}`);
-            continue;
-          }
-          
-          const latestTweetId = latestTweet.id;
-          log.info(`📌 Latest tweet ID: ${latestTweetId} from ${targetBotAccount.account_name}`);
-          updateLastCheckedTweetIds(configData, settingIndex, targetBotId, latestTweetId);
-          configUpdated = true;
-
-          // 返信Botのクライアントを作成
-          const replyClient = createTwitterClient(replyBotAccount);
-
-          // 各新しいツイートに対して返信処理
-          for (const tweet of newTweets) {
-            if (!tweet || typeof tweet !== 'object' || !tweet.id || !tweet.text) {
-              log.warn(`⚠️ Skipping invalid tweet structure`);
-              log.debug(`Invalid tweet: ${JSON.stringify(tweet)}`);
-              continue;
-            }
-            
-            log.info(`💬 Processing tweet ${tweet.id} from ${targetBotAccount.account_name}: "${tweet.text.substring(0, 50)}..."`);
-
-            try {
-              // 返信を投稿
-              const replyResult = await postReply(
-                replyClient,
-                replySetting.reply_content,
-                tweet.id,
-                replyBotAccount.account_name
-              );
-
-              if (replyResult.success) {
-                successCount++;
-                log.info(`✅ Reply posted by ${replyBotAccount.account_name} to ${targetBotAccount.account_name}'s tweet ${tweet.id}`);
-              } else {
-                errorCount++; // 実際の返信失敗はエラーカウント
-                log.error(`❌ Reply failed from ${replyBotAccount.account_name}: ${replyResult.error}`);
-              }
-
-              // Rate制限を避けるため待機時間を増加
-              await new Promise(resolve => setTimeout(resolve, 3000));
-
-            } catch (error) {
-              errorCount++; // 実際の処理エラーはエラーカウント
-              log.error(`💥 Error posting reply from ${replyBotAccount.account_name}: ${error.message}`);
-            }
-          }
-
-          targetProcessed++;
-          // Rate Limit対策: ツイート処理間の待機時間を増加
-          await new Promise(resolve => setTimeout(resolve, 2000));
-
-        } catch (error) {
-          errorCount++; // 実際の処理エラーはエラーカウント
-          log.error(`💥 Error processing target bot ${targetBotAccount.account_name}: ${error.message}`);
-          log.debug(`Error stack: ${error.stack}`);
+        // キャッシュからツイートを取得
+        const newTweets = cachedData.tweets;
+        
+        log.info(`📦 [CACHE] Retrieved ${newTweets.length} tweets for ${targetBotAccount.account_name}`);
+        
+        if (newTweets.length === 0) {
+          log.debug(`📭 [CACHE] No new tweets found for ${targetBotAccount.account_name}`);
+          continue;
         }
+
+        log.info(`📨 [CACHE] Found ${newTweets.length} tweets from ${targetBotAccount.account_name}`);
+
+        // 最新のツイートIDを記録（時系列で最新のもの）
+        const latestTweet = newTweets[0];
+        
+        if (!latestTweet || typeof latestTweet !== 'object' || !latestTweet.id) {
+          log.warn(`⚠️ [CACHE] Invalid latest tweet structure for ${targetBotAccount.account_name}`);
+          log.debug(`Latest tweet data: ${JSON.stringify(latestTweet)}`);
+          continue;
+        }
+        
+        const latestTweetId = latestTweet.id;
+        log.info(`📌 [CACHE] Latest tweet ID: ${latestTweetId} from ${targetBotAccount.account_name}`);
+        updateLastCheckedTweetIds(configData, settingIndex, targetBotId, latestTweetId);
+        configUpdated = true;
+
+        // 返信Botのクライアントを作成
+        const replyClient = createTwitterClient(replyBotAccount);
+
+        // 各新しいツイートに対して返信処理
+        for (const tweet of newTweets) {
+          if (!tweet || typeof tweet !== 'object' || !tweet.id || !tweet.text) {
+            log.warn(`⚠️ Skipping invalid tweet structure`);
+            log.debug(`Invalid tweet: ${JSON.stringify(tweet)}`);
+            continue;
+          }
+          
+          log.info(`💬 [CACHE] Processing tweet ${tweet.id} from ${targetBotAccount.account_name}: "${tweet.text.substring(0, 50)}..."`);
+
+          try {
+            // 返信を投稿
+            const replyResult = await postReply(
+              replyClient,
+              replySetting.reply_content,
+              tweet.id,
+              replyBotAccount.account_name
+            );
+
+            if (replyResult.success) {
+              successCount++;
+              log.info(`✅ [CACHE] Reply posted by ${replyBotAccount.account_name} to ${targetBotAccount.account_name}'s tweet ${tweet.id}`);
+            } else {
+              errorCount++;
+              log.error(`❌ [CACHE] Reply failed from ${replyBotAccount.account_name}: ${replyResult.error}`);
+            }
+
+            // Rate制限を避けるため待機時間を増加
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+          } catch (error) {
+            errorCount++;
+            log.error(`💥 [CACHE] Error posting reply from ${replyBotAccount.account_name}: ${error.message}`);
+          }
+        }
+
+        targetProcessed++;
+        // Rate Limit対策: ツイート処理間の待機時間
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      log.info(`📊 Reply setting ${settingIndex + 1} completed: processed ${targetProcessed}/${targetBotIds.length} targets`);
+      log.info(`📊 Reply setting ${settingIndex + 1} completed: processed ${targetProcessed}/${targetBotIds.length} targets (cached)`);
 
     } catch (error) {
-      errorCount++; // 予期しないエラーはカウント
+      errorCount++;
       log.error(`💥 Error processing reply setting ${settingIndex + 1}: ${error.message}`);
       log.debug(`Error stack: ${error.stack}`);
     }
 
-    // Rate Limit対策: 設定間の待機時間を増加
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Rate Limit対策: 設定間の待機時間
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
   // 設定ファイルが更新された場合は保存を試行
@@ -529,13 +629,14 @@ async function processReplies(configData) {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager - REPLY MONITORING ONLY (ENHANCED VERSION)...');
+    log.info('🚀 Starting Twitter Auto Manager - REPLY MONITORING ONLY (CACHE OPTIMIZED VERSION)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
     log.info(`⚡ Rate limit optimizations: Extended wait times, reduced API calls`);
     log.info(`🔧 Enhanced debugging: Data structure validation enabled`);
     log.info(`🛡️ Orphaned setting detection: Skip outdated bot references without errors`);
+    log.info(`🆕 Cache optimization: Same target tweets fetched only once, shared across reply bots`);
     
     // 設定ファイルを読み込み
     const configData = loadConfig();
