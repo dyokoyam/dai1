@@ -292,6 +292,7 @@ function getLastCheckedTweetId(replySetting, targetBotId) {
 async function processReplies(configData) {
   let successCount = 0;
   let errorCount = 0;
+  let skippedCount = 0; // 設定不備によるスキップ数
   let configUpdated = false;
   
   if (!configData.reply_settings || configData.reply_settings.length === 0) {
@@ -314,9 +315,10 @@ async function processReplies(configData) {
       // 新仕様：返信するBotの情報を取得（単一）
       const replyBotAccount = getBotAccountById(configData, replySetting.reply_bot_id);
       if (!replyBotAccount) {
-        log.warn(`❌ Reply bot account not found for reply setting ${settingIndex + 1} (ID: ${replySetting.reply_bot_id})`);
-        errorCount++;
-        continue;
+        log.warn(`⚠️ Skipping orphaned reply setting: reply_bot_id ${replySetting.reply_bot_id} not found (setting may be outdated)`);
+        log.info(`📝 Available bot IDs: ${configData.bots.map(b => `${b.account.id}(${b.account.account_name})`).join(', ')}`);
+        skippedCount++;
+        continue; // エラーカウントに含めない
       }
 
       // 返信するBotがアクティブでない場合はスキップ
@@ -330,15 +332,15 @@ async function processReplies(configData) {
       try {
         targetBotIds = JSON.parse(replySetting.target_bot_ids);
         if (!Array.isArray(targetBotIds) || targetBotIds.length === 0) {
-          log.warn(`❌ Invalid or empty target_bot_ids for reply setting ${settingIndex + 1}: ${replySetting.target_bot_ids}`);
-          errorCount++;
-          continue;
+          log.warn(`⚠️ Skipping reply setting with invalid target_bot_ids: ${replySetting.target_bot_ids}`);
+          skippedCount++;
+          continue; // エラーカウントに含めない
         }
       } catch (parseError) {
-        log.error(`❌ Failed to parse target_bot_ids for reply setting ${settingIndex + 1}: ${parseError.message}`);
-        log.error(`❌ Raw target_bot_ids value: ${replySetting.target_bot_ids}`);
-        errorCount++;
-        continue;
+        log.warn(`⚠️ Skipping reply setting with unparseable target_bot_ids: ${replySetting.target_bot_ids}`);
+        log.debug(`Parse error: ${parseError.message}`);
+        skippedCount++;
+        continue; // エラーカウントに含めない
       }
       
       log.info(`🔍 Reply bot ${replyBotAccount.account_name} monitoring ${targetBotIds.length} targets...`);
@@ -350,9 +352,8 @@ async function processReplies(configData) {
         
         const targetBotAccount = getBotAccountById(configData, targetBotId);
         if (!targetBotAccount) {
-          log.warn(`❌ Target bot account not found for ID: ${targetBotId}`);
-          errorCount++;
-          continue;
+          log.warn(`⚠️ Skipping orphaned target bot: ID ${targetBotId} not found (setting may be outdated)`);
+          continue; // エラーカウントに含めない（個別Botの不存在は設定問題）
         }
 
         // 監視対象Botがアクティブでない場合はスキップ
@@ -385,7 +386,7 @@ async function processReplies(configData) {
               continue; // エラーカウントせずに次へ
             } else {
               log.error(`❌ Failed to fetch tweets for ${targetBotAccount.account_name}: ${tweetsResult.error}`);
-              errorCount++;
+              errorCount++; // 実際のAPIエラーはカウント
               continue;
             }
           }
@@ -447,7 +448,7 @@ async function processReplies(configData) {
                 successCount++;
                 log.info(`✅ Reply posted by ${replyBotAccount.account_name} to ${targetBotAccount.account_name}'s tweet ${tweet.id}`);
               } else {
-                errorCount++;
+                errorCount++; // 実際の返信失敗はエラーカウント
                 log.error(`❌ Reply failed from ${replyBotAccount.account_name}: ${replyResult.error}`);
               }
 
@@ -455,7 +456,7 @@ async function processReplies(configData) {
               await new Promise(resolve => setTimeout(resolve, 3000));
 
             } catch (error) {
-              errorCount++;
+              errorCount++; // 実際の処理エラーはエラーカウント
               log.error(`💥 Error posting reply from ${replyBotAccount.account_name}: ${error.message}`);
             }
           }
@@ -465,7 +466,7 @@ async function processReplies(configData) {
           await new Promise(resolve => setTimeout(resolve, 2000));
 
         } catch (error) {
-          errorCount++;
+          errorCount++; // 実際の処理エラーはエラーカウント
           log.error(`💥 Error processing target bot ${targetBotAccount.account_name}: ${error.message}`);
           log.debug(`Error stack: ${error.stack}`);
         }
@@ -474,7 +475,7 @@ async function processReplies(configData) {
       log.info(`📊 Reply setting ${settingIndex + 1} completed: processed ${targetProcessed}/${targetBotIds.length} targets`);
 
     } catch (error) {
-      errorCount++;
+      errorCount++; // 予期しないエラーはカウント
       log.error(`💥 Error processing reply setting ${settingIndex + 1}: ${error.message}`);
       log.debug(`Error stack: ${error.stack}`);
     }
@@ -514,6 +515,12 @@ async function processReplies(configData) {
     }
   }
 
+  // スキップされた設定がある場合の情報ログ
+  if (skippedCount > 0) {
+    log.info(`📋 Summary: ${skippedCount} reply settings were skipped due to outdated configuration (orphaned bot references)`);
+    log.info(`💡 These orphaned settings can be cleaned up by deleting and recreating the affected reply configurations`);
+  }
+
   return { successCount, errorCount };
 }
 
@@ -522,12 +529,13 @@ async function processReplies(configData) {
  */
 async function main() {
   try {
-    log.info('🚀 Starting Twitter Auto Manager - REPLY MONITORING ONLY (DEBUG VERSION)...');
+    log.info('🚀 Starting Twitter Auto Manager - REPLY MONITORING ONLY (ENHANCED VERSION)...');
     log.info(`📊 Environment: ${process.env.NODE_ENV || 'production'}`);
     log.info(`🔄 Dry run: ${config.dryRun}`);
     log.info(`⏰ Current time (JST): ${getJapanTime()}`);
     log.info(`⚡ Rate limit optimizations: Extended wait times, reduced API calls`);
     log.info(`🔧 Enhanced debugging: Data structure validation enabled`);
+    log.info(`🛡️ Orphaned setting detection: Skip outdated bot references without errors`);
     
     // 設定ファイルを読み込み
     const configData = loadConfig();
@@ -562,13 +570,17 @@ async function main() {
     // 結果サマリー
     if (replyResults.errorCount > 0) {
       log.warn(`🚨 ATTENTION: ${replyResults.errorCount} reply errors detected!`);
-      log.warn(`🚨 Please check Twitter API rate limits and data structure processing.`);
+      log.warn(`🚨 This indicates actual processing errors (API failures, network issues, etc.)`);
+      log.warn(`🚨 Please check Twitter API rate limits, authentication, and network connectivity.`);
       
       log.error(`❌ Process completed with ${replyResults.errorCount} errors - requires investigation`);
       process.exit(1);
     } else {
       log.info(`🎉 Reply monitoring completed successfully!`);
       log.info(`📊 Result: ${replyResults.successCount} replies posted successfully`);
+      if (replyResults.successCount === 0) {
+        log.info(`💡 No replies posted this time - this is normal if no new tweets were found from monitored accounts`);
+      }
     }
     
   } catch (error) {

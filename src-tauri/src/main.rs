@@ -127,6 +127,74 @@ struct TwitterApiResponse {
     message: String,
 }
 
+// 孤立した返信設定をクリーンアップする関数
+fn cleanup_orphaned_reply_settings(conn: &Connection) -> Result<()> {
+    // 存在しないreply_bot_idを参照する設定を削除
+    let deleted_by_reply_bot = conn.execute(
+        "DELETE FROM reply_settings WHERE reply_bot_id NOT IN (SELECT id FROM bot_accounts)",
+        [],
+    )?;
+    
+    // 存在しないtarget_bot_idsを含む設定をチェックして削除
+    let mut orphaned_settings = Vec::new();
+    
+    let mut stmt = conn.prepare("SELECT id, target_bot_ids FROM reply_settings WHERE is_active = 1")?;
+    let rows = stmt.query_map([], |row| {
+        let id: i64 = row.get(0)?;
+        let target_bot_ids_json: String = row.get(1)?;
+        Ok((id, target_bot_ids_json))
+    })?;
+    
+    for row in rows {
+        if let Ok((id, target_bot_ids_json)) = row {
+            if let Ok(target_bot_ids) = serde_json::from_str::<Vec<i64>>(&target_bot_ids_json) {
+                // 各target_bot_idが存在するかチェック
+                let mut valid_ids = Vec::new();
+                for target_id in &target_bot_ids {
+                    let exists: i32 = conn.query_row(
+                        "SELECT COUNT(*) FROM bot_accounts WHERE id = ?",
+                        params![target_id],
+                        |row| row.get(0)
+                    ).unwrap_or(0);
+                    
+                    if exists > 0 {
+                        valid_ids.push(*target_id);
+                    }
+                }
+                
+                if valid_ids.is_empty() {
+                    // 全てのtarget_bot_idが存在しない場合は設定を削除
+                    orphaned_settings.push(id);
+                } else if valid_ids.len() < target_bot_ids.len() {
+                    // 一部のtarget_bot_idが存在しない場合は有効なIDのみで更新
+                    let updated_json = serde_json::to_string(&valid_ids).unwrap();
+                    let now = Utc::now().to_rfc3339();
+                    conn.execute(
+                        "UPDATE reply_settings SET target_bot_ids = ?, updated_at = ? WHERE id = ?",
+                        params![updated_json, now, id],
+                    )?;
+                    println!("Updated reply setting {} with valid target_bot_ids: {:?}", id, valid_ids);
+                }
+            } else {
+                // JSONパースに失敗した場合も削除対象
+                orphaned_settings.push(id);
+            }
+        }
+    }
+    
+    // 孤立した設定を削除
+    for setting_id in orphaned_settings {
+        conn.execute("DELETE FROM reply_settings WHERE id = ?", params![setting_id])?;
+    }
+    
+    if deleted_by_reply_bot > 0 || !orphaned_settings.is_empty() {
+        println!("Cleaned up orphaned reply settings: {} by reply_bot, {} by target_bots", 
+            deleted_by_reply_bot, orphaned_settings.len());
+    }
+    
+    Ok(())
+}
+
 // データベース初期化
 fn init_database() -> Result<Connection> {
     let proj_dirs = ProjectDirs::from("com", "twilia", "bot-manager")
@@ -266,6 +334,9 @@ fn init_database() -> Result<Connection> {
         // 既存のデータベースに対してマイグレーションを実行
         run_database_migrations(&conn)?;
     }
+    
+    // 孤立した返信設定をクリーンアップ
+    cleanup_orphaned_reply_settings(&conn)?;
     
     Ok(conn)
 }
@@ -499,6 +570,29 @@ fn save_reply_settings(
         return Err("監視対象Botが選択されていません".to_string());
     }
     
+    // Botの存在チェック
+    let reply_bot_exists: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM bot_accounts WHERE id = ?",
+        params![reply_bot_id],
+        |row| row.get(0)
+    ).map_err(|e| e.to_string())?;
+    
+    if reply_bot_exists == 0 {
+        return Err(format!("返信Bot ID {} が存在しません", reply_bot_id));
+    }
+    
+    for target_id in &target_bot_ids {
+        let target_exists: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM bot_accounts WHERE id = ?",
+            params![target_id],
+            |row| row.get(0)
+        ).map_err(|e| e.to_string())?;
+        
+        if target_exists == 0 {
+            return Err(format!("監視対象Bot ID {} が存在しません", target_id));
+        }
+    }
+    
     // 既存の設定を無効化
     conn.execute(
         "UPDATE reply_settings SET is_active = 0, updated_at = ? WHERE reply_bot_id = ?",
@@ -521,8 +615,13 @@ fn save_reply_settings(
 #[tauri::command]
 fn get_reply_settings(state: State<AppState>) -> Result<Vec<ReplySettings>, String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    
+    // 存在するBotを参照する返信設定のみを取得（JOINを使用）
     let mut stmt = conn.prepare(
-        "SELECT * FROM reply_settings WHERE is_active = 1 ORDER BY created_at DESC"
+        "SELECT rs.* FROM reply_settings rs
+         INNER JOIN bot_accounts ba ON rs.reply_bot_id = ba.id
+         WHERE rs.is_active = 1 
+         ORDER BY rs.created_at DESC"
     ).map_err(|e| e.to_string())?;
     
     let settings = stmt.query_map([], |row| {
@@ -541,7 +640,44 @@ fn get_reply_settings(state: State<AppState>) -> Result<Vec<ReplySettings>, Stri
     .collect::<SqliteResult<Vec<_>>>()
     .map_err(|e| e.to_string())?;
     
-    Ok(settings)
+    // さらにtarget_bot_idsの存在チェックをして有効な設定のみを返す
+    let mut valid_settings = Vec::new();
+    
+    for mut setting in settings {
+        if let Ok(target_bot_ids) = serde_json::from_str::<Vec<i64>>(&setting.target_bot_ids) {
+            let mut valid_targets = Vec::new();
+            
+            for target_id in target_bot_ids {
+                let exists: i32 = conn.query_row(
+                    "SELECT COUNT(*) FROM bot_accounts WHERE id = ?",
+                    params![target_id],
+                    |row| row.get(0)
+                ).unwrap_or(0);
+                
+                if exists > 0 {
+                    valid_targets.push(target_id);
+                }
+            }
+            
+            if !valid_targets.is_empty() {
+                // 有効なターゲットがある場合のみ設定を含める
+                if valid_targets.len() != target_bot_ids.len() {
+                    // 一部無効なターゲットがある場合は更新
+                    let updated_json = serde_json::to_string(&valid_targets).unwrap();
+                    setting.target_bot_ids = updated_json;
+                    
+                    let now = Utc::now().to_rfc3339();
+                    let _ = conn.execute(
+                        "UPDATE reply_settings SET target_bot_ids = ?, updated_at = ? WHERE id = ?",
+                        params![setting.target_bot_ids, now, setting.id],
+                    );
+                }
+                valid_settings.push(setting);
+            }
+        }
+    }
+    
+    Ok(valid_settings)
 }
 
 #[tauri::command]
@@ -605,6 +741,29 @@ fn update_last_checked_tweet(
     ).map_err(|e| e.to_string())?;
     
     Ok(())
+}
+
+// 孤立した返信設定をクリーンアップする新しいコマンド
+#[tauri::command]
+fn cleanup_orphaned_reply_settings_cmd(state: State<AppState>) -> Result<i32, String> {
+    let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
+    
+    let initial_count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM reply_settings WHERE is_active = 1",
+        [],
+        |row| row.get(0)
+    ).map_err(|e| e.to_string())?;
+    
+    cleanup_orphaned_reply_settings(&conn)
+        .map_err(|e| format!("クリーンアップエラー: {}", e))?;
+    
+    let final_count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM reply_settings WHERE is_active = 1",
+        [],
+        |row| row.get(0)
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(initial_count - final_count)
 }
 
 // 以下、既存の関数群...
@@ -767,8 +926,66 @@ fn update_bot_account(account: BotAccount, state: State<AppState>) -> Result<(),
 fn delete_bot_account(id: i64, state: State<AppState>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|_| "Failed to lock database")?;
     
+    // CASCADE削除は既に設定されているが、明示的に返信設定もクリーンアップ
+    // 1. 削除対象のBotが返信Botとして使われている設定を削除
+    let deleted_reply_settings = conn.execute(
+        "DELETE FROM reply_settings WHERE reply_bot_id = ?",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    
+    // 2. 削除対象のBotが監視対象として含まれている設定から除去
+    let mut settings_to_update = Vec::new();
+    {
+        let mut stmt = conn.prepare("SELECT id, target_bot_ids FROM reply_settings WHERE is_active = 1")?;
+        let rows = stmt.query_map([], |row| {
+            let setting_id: i64 = row.get(0)?;
+            let target_bot_ids_json: String = row.get(1)?;
+            Ok((setting_id, target_bot_ids_json))
+        })?;
+        
+        for row in rows {
+            if let Ok((setting_id, target_bot_ids_json)) = row {
+                if let Ok(mut target_bot_ids) = serde_json::from_str::<Vec<i64>>(&target_bot_ids_json) {
+                    let original_len = target_bot_ids.len();
+                    target_bot_ids.retain(|&x| x != id);
+                    
+                    if target_bot_ids.len() != original_len {
+                        if target_bot_ids.is_empty() {
+                            // 監視対象がなくなった場合は設定を削除
+                            settings_to_update.push((setting_id, None));
+                        } else {
+                            // 監視対象を更新
+                            if let Ok(updated_json) = serde_json::to_string(&target_bot_ids) {
+                                settings_to_update.push((setting_id, Some(updated_json)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    let now = Utc::now().to_rfc3339();
+    for (setting_id, updated_targets) in settings_to_update {
+        match updated_targets {
+            Some(json) => {
+                conn.execute(
+                    "UPDATE reply_settings SET target_bot_ids = ?, updated_at = ? WHERE id = ?",
+                    params![json, now, setting_id],
+                ).map_err(|e| e.to_string())?;
+            }
+            None => {
+                conn.execute("DELETE FROM reply_settings WHERE id = ?", params![setting_id])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    
+    // 3. 最後にBotアカウントを削除（CASCADE削除により関連レコードも自動削除）
     conn.execute("DELETE FROM bot_accounts WHERE id = ?", params![id])
         .map_err(|e| e.to_string())?;
+    
+    println!("Deleted bot account {} and cleaned up {} reply settings", id, deleted_reply_settings);
     
     Ok(())
 }
@@ -1332,9 +1549,12 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
     let bot_configs: Vec<_> = rows.collect::<SqliteResult<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     
-    // 返信設定を取得（新仕様）
-    let mut reply_stmt = conn.prepare("SELECT * FROM reply_settings WHERE is_active = 1")
-        .map_err(|e| e.to_string())?;
+    // 返信設定を取得（新仕様、存在するBotのみ）
+    let mut reply_stmt = conn.prepare(
+        "SELECT rs.* FROM reply_settings rs
+         INNER JOIN bot_accounts ba ON rs.reply_bot_id = ba.id
+         WHERE rs.is_active = 1"
+    ).map_err(|e| e.to_string())?;
     
     let reply_rows = reply_stmt.query_map([], |row| {
         Ok(ReplySettings {
@@ -1365,7 +1585,7 @@ fn export_github_config(path: String, state: State<AppState>) -> Result<(), Stri
     fs::write(&adjusted_path, serde_json::to_string_pretty(&github_config).unwrap())
         .map_err(|e| format!("ファイル書き込みエラー ({}): {}", adjusted_path, e))?;
     
-    println!("GitHub Actions用設定ファイルを作成しました（新仕様返信機能対応）: {}", adjusted_path);
+    println!("GitHub Actions用設定ファイルを作成しました（新仕様返信機能対応・Bot存在チェック済み）: {}", adjusted_path);
     Ok(())
 }
 
@@ -1641,7 +1861,8 @@ fn main() {
             save_reply_settings,
             get_reply_settings,
             delete_reply_settings,
-            update_last_checked_tweet
+            update_last_checked_tweet,
+            cleanup_orphaned_reply_settings_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
