@@ -138,41 +138,41 @@
       "created_at": "2025-07-23T05:53:13.993343100+00:00",
       "id": 14,
       "is_active": true,
-      "last_checked_tweet_ids": "[\"8:1949111693402915191\"]",
+      "last_checked_tweet_ids": "[\"8:1949414170119507998\"]",
       "reply_bot_id": 5,
       "reply_content": "必見\nhttps://x.com/z7rm6/status/1945125019832737821\n",
       "target_bot_ids": "[8]",
-      "updated_at": "2025-07-26T14:41:29.983Z"
+      "updated_at": "2025-07-27T10:43:39.654Z"
     },
     {
       "created_at": "2025-07-23T05:55:11.124440300+00:00",
       "id": 15,
       "is_active": true,
-      "last_checked_tweet_ids": "[\"8:1949111693402915191\"]",
+      "last_checked_tweet_ids": "[\"8:1949414170119507998\"]",
       "reply_bot_id": 6,
       "reply_content": "えっど\nhttps://x.com/z7rm6/status/1946131521112568026",
       "target_bot_ids": "[8]",
-      "updated_at": "2025-07-26T14:41:35.192Z"
+      "updated_at": "2025-07-27T10:43:44.875Z"
     },
     {
       "created_at": "2025-07-23T05:55:45.653740900+00:00",
       "id": 16,
       "is_active": true,
-      "last_checked_tweet_ids": "[\"8:1949111693402915191\"]",
+      "last_checked_tweet_ids": "[\"8:1949414170119507998\"]",
       "reply_bot_id": 9,
       "reply_content": "やば\nhttps://x.com/z7rm6/status/1946136973225480701\n",
       "target_bot_ids": "[8]",
-      "updated_at": "2025-07-26T14:41:40.441Z"
+      "updated_at": "2025-07-27T10:43:50.094Z"
     },
     {
       "created_at": "2025-07-23T05:57:35.587427800+00:00",
       "id": 17,
       "is_active": true,
-      "last_checked_tweet_ids": "[\"8:1949111693402915191\"]",
+      "last_checked_tweet_ids": "[\"8:1949414170119507998\"]",
       "reply_bot_id": 11,
       "reply_content": "シコすぎ\nhttps://x.com/z7rm6/status/1946146670435282955",
       "target_bot_ids": "[8]",
-      "updated_at": "2025-07-26T14:41:45.715Z"
+      "updated_at": "2025-07-27T10:43:55.308Z"
     }
   ],
   "updated_at": "2025-07-23T05:57:52.887159+00:00",
