@@ -30,7 +30,7 @@
         "status": "active",
         "updated_at": "2025-07-13T07:54:18.276214900+00:00"
       },
-      "current_index": 1,
+      "current_index": 2,
       "scheduled_content_list": "[\"わあい！\",\"こんにちわ\",\"ないす！\"]",
       "scheduled_times": "07:00"
     },
@@ -47,7 +47,7 @@
         "status": "active",
         "updated_at": "2025-07-13T07:25:35.154016800+00:00"
       },
-      "current_index": 1,
+      "current_index": 0,
       "scheduled_content_list": "[\"おはよ～\",\"やっほー！\"]",
       "scheduled_times": "07:00"
     },
